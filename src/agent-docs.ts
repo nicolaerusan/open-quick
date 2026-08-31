@@ -41,7 +41,7 @@ OpenQuick turns a local folder containing an \`index.html\` into a live static s
 - Status: private preview
 - Public access: capability discovery, health, site listing, and hosted sites
 - Write access: operator-provisioned bearer token
-- Limits: static files only; maximum decoded release size is 10 MB
+- Limits: static files only; maximum decoded release size is 25 MB
 - Deploy behavior: one atomic release replaces the selected site slug
 
 ## Decide whether you can join
@@ -100,7 +100,7 @@ Service version: ${version}
 ## Preconditions
 
 - The folder must contain \`index.html\`.
-- The decoded release must be 10 MB or smaller.
+- The decoded release must be 25 MB or smaller.
 - Site slugs use lowercase letters, numbers, and hyphens.
 - \`OPENQUICK_HOST\` must be \`${baseUrl}\` for production.
 - \`OPENQUICK_TOKEN\` must come from a private credential store. Never request or reveal it in chat.
