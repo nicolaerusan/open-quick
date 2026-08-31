@@ -4,6 +4,9 @@ OpenQuick is an open-source, agent-friendly static hosting service inspired by
 [Shopify Quick](https://shopify.engineering/quick). Point the TypeScript CLI at a
 folder and receive a shareable URL.
 
+**Live MVP:** [open-quick-production.up.railway.app](https://open-quick-production.up.railway.app) ·
+**Example site:** [hello](https://open-quick-production.up.railway.app/sites/hello/)
+
 ```bash
 openquick init my-site
 OPENQUICK_HOST=https://your-openquick.example \
