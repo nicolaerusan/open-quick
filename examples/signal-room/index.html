@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="A tiny experiment-prioritization room built from one static folder.">
+    <title>Signal Room — pick the next move</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="Signal Room home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>SIGNAL ROOM</span>
+      </a>
+      <div class="system-state"><span></span> BROWSER-LOCAL / LIVE</div>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">A TINY TEAM INSTRUMENT / BUILT FROM 3 FILES</p>
+          <h1>Find the signal.<br><em>Pick the move.</em></h1>
+        </div>
+        <div class="hero-aside">
+          <p>Capture product hunches, let the room vote, and pressure-test whether the strongest idea is ready to ship.</p>
+          <div class="folder-receipt">
+            <span>OPENQUICK RECEIPT</span>
+            <strong>index.html + styles.css + app.js</strong>
+            <small>NO BUILD · NO BACKEND · NO FRAMEWORK</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="workspace" aria-label="Signal board">
+        <div class="board-panel">
+          <div class="section-heading">
+            <div><span>01</span><h2>Signals</h2></div>
+            <p id="signal-count">4 observations</p>
+          </div>
+
+          <form id="signal-form" class="signal-form">
+            <label class="sr-only" for="signal-input">Add a new signal</label>
+            <input id="signal-input" name="signal" maxlength="120" placeholder="Add a sharp observation…" autocomplete="off">
+            <label class="sr-only" for="signal-kind">Signal category</label>
+            <select id="signal-kind" name="kind">
+              <option value="customer">Customer</option>
+              <option value="product">Product</option>
+              <option value="market">Market</option>
+            </select>
+            <button type="submit">ADD SIGNAL <span>↗</span></button>
+          </form>
+
+          <div class="filters" role="group" aria-label="Filter signals">
+            <button class="filter active" data-filter="all">ALL</button>
+            <button class="filter" data-filter="customer">CUSTOMER</button>
+            <button class="filter" data-filter="product">PRODUCT</button>
+            <button class="filter" data-filter="market">MARKET</button>
+          </div>
+
+          <div id="signal-list" class="signal-list" aria-live="polite"></div>
+        </div>
+
+        <aside class="decision-panel">
+          <div class="section-heading inverse">
+            <div><span>02</span><h2>Readiness</h2></div>
+            <p>LIVE SCORE</p>
+          </div>
+
+          <div class="score-wrap">
+            <div class="score" id="score">74</div>
+            <div class="score-label"><span>0</span><b>SHIP SIGNAL</b><span>100</span></div>
+          </div>
+
+          <div class="meters">
+            <label>
+              <span><b>Clarity</b><output id="clarity-output">82</output></span>
+              <input id="clarity" type="range" min="0" max="100" value="82">
+            </label>
+            <label>
+              <span><b>Evidence</b><output id="evidence-output">68</output></span>
+              <input id="evidence" type="range" min="0" max="100" value="68">
+            </label>
+            <label>
+              <span><b>Reversibility</b><output id="reversibility-output">72</output></span>
+              <input id="reversibility" type="range" min="0" max="100" value="72">
+            </label>
+          </div>
+
+          <div class="decision-note">
+            <label for="decision">NEXT MOVE</label>
+            <textarea id="decision" rows="4" maxlength="240" placeholder="Name the smallest decisive experiment…">Ship the five-minute prototype to ten teams and measure whether they share it unprompted.</textarea>
+            <small><span id="saved-state">SAVED LOCALLY</span><span id="character-count">92 / 240</span></small>
+          </div>
+        </aside>
+      </section>
+
+      <section class="footer-note">
+        <span>03</span>
+        <p>This is a complete interactive site deployed as a folder. Refresh it: your votes, sliders, and note stay in this browser.</p>
+        <a href="https://github.com/nicolaerusan/open-quick/tree/main/examples/signal-room">VIEW THE FOLDER <b>↗</b></a>
+      </section>
+    </main>
+
+    <footer>
+      <span>MADE WITH OPENQUICK</span>
+      <span>STATIC CAN STILL FEEL ALIVE</span>
+    </footer>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
