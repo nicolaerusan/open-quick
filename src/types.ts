@@ -7,6 +7,13 @@ export type DeployPayload = {
   files: DeployFile[];
 };
 
+export type DeployErrorCode = "unauthorized" | "payload_too_large" | "invalid_deployment";
+
+export type DeployErrorResponse = {
+  error: string;
+  code: DeployErrorCode;
+};
+
 export type SiteRecord = {
   slug: string;
   releaseId: string;
@@ -14,6 +21,11 @@ export type SiteRecord = {
   totalBytes: number;
   createdAt: string;
   updatedAt: string;
+};
+
+export type DeployReceipt = {
+  site: SiteRecord;
+  url: string;
 };
 
 export type StoredAsset = {

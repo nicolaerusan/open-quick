@@ -208,12 +208,64 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
             content: { "application/json": { schema: { type: "object", required: ["files"], properties: { files: { type: "array", items: { type: "object", required: ["path", "content"], properties: { path: { type: "string" }, content: { type: "string", contentEncoding: "base64" } } } } } } } },
           },
           responses: {
-            "201": { description: "Deployment created" }, "401": { description: "Missing or invalid token" },
-            "413": { description: "Request too large" }, "422": { description: "Invalid deployment" },
+            "201": {
+              description: "Deployment created",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/DeployReceipt" } } },
+            },
+            "401": {
+              description: "Missing or invalid token",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } },
+            },
+            "413": {
+              description: "Request too large",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } },
+            },
+            "422": {
+              description: "Invalid deployment",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } },
+            },
           },
         },
       },
     },
-    components: { securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } } },
+    components: {
+      securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } },
+      schemas: {
+        SiteRecord: {
+          type: "object",
+          additionalProperties: false,
+          required: ["slug", "releaseId", "fileCount", "totalBytes", "createdAt", "updatedAt"],
+          properties: {
+            slug: { type: "string", pattern: "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$" },
+            releaseId: { type: "string", minLength: 1 },
+            fileCount: { type: "integer", minimum: 1 },
+            totalBytes: { type: "integer", minimum: 0 },
+            createdAt: { type: "string", format: "date-time" },
+            updatedAt: { type: "string", format: "date-time" },
+          },
+        },
+        DeployReceipt: {
+          type: "object",
+          additionalProperties: false,
+          required: ["site", "url"],
+          properties: {
+            site: { $ref: "#/components/schemas/SiteRecord" },
+            url: { type: "string", format: "uri" },
+          },
+        },
+        ErrorEnvelope: {
+          type: "object",
+          additionalProperties: false,
+          required: ["error", "code"],
+          properties: {
+            error: { type: "string", minLength: 1 },
+            code: {
+              type: "string",
+              enum: ["unauthorized", "payload_too_large", "invalid_deployment"],
+            },
+          },
+        },
+      },
+    },
   };
 }

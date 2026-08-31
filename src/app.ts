@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { logger } from "hono/logger";
-import type { DeployPayload } from "./types.js";
+import type { DeployErrorCode, DeployErrorResponse, DeployPayload } from "./types.js";
 import { MAX_DEPLOY_BYTES, SiteStore } from "./store.js";
 import { agentCard, agentMarkdown, authMarkdown, llmsTxt, openApiDocument, skillMarkdown } from "./agent-docs.js";
 
@@ -9,6 +9,10 @@ type AppOptions = {
   adminToken: string;
   baseUrl?: string;
 };
+
+function deployError(code: DeployErrorCode, error: string): DeployErrorResponse {
+  return { error, code };
+}
 
 function escapeHtml(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
@@ -97,19 +101,21 @@ export function createApp(options: AppOptions): Hono {
   app.post("/api/v1/sites/:slug/deploy", async (c) => {
     const authorization = c.req.header("authorization");
     if (!options.adminToken || authorization !== `Bearer ${options.adminToken}`) {
-      return c.json({ error: "A valid deploy token is required" }, 401);
+      return c.json(deployError("unauthorized", "A valid deploy token is required"), 401);
     }
     const length = Number(c.req.header("content-length") ?? "0");
     if (Number.isFinite(length) && length > Math.ceil(MAX_DEPLOY_BYTES * 1.45)) {
-      return c.json({ error: "Deploy request is too large" }, 413);
+      return c.json(deployError("payload_too_large", "Deploy request is too large"), 413);
     }
     try {
       const payload = await c.req.json<DeployPayload>();
       const site = await options.store.deploy(c.req.param("slug"), payload.files);
       const origin = options.baseUrl || new URL(c.req.url).origin;
       return c.json({ site, url: `${origin}/sites/${encodeURIComponent(site.slug)}/` }, 201);
-    } catch (error) {
-      return c.json({ error: error instanceof Error ? error.message : "Invalid deploy" }, 422);
+    } catch {
+      // Keep validation responses stable and safe. Store and parser errors can
+      // contain user paths or provider details that must not cross the API.
+      return c.json(deployError("invalid_deployment", "Deployment validation failed"), 422);
     }
   });
   app.get("/sites/:slug", (c) => c.redirect(`/sites/${encodeURIComponent(c.req.param("slug"))}/`, 308));
