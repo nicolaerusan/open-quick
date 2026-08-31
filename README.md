@@ -5,7 +5,8 @@ OpenQuick is an open-source, agent-friendly static hosting service inspired by
 folder and receive a shareable URL.
 
 **Live MVP:** [open-quick-production.up.railway.app](https://open-quick-production.up.railway.app) ·
-**Example site:** [hello](https://open-quick-production.up.railway.app/sites/hello/)
+**Agent entry:** [agent.md](https://open-quick-production.up.railway.app/agent.md) ·
+**Example site:** [Signal Room](https://open-quick-production.up.railway.app/sites/signal-room/)
 
 ```bash
 openquick init my-site
@@ -26,6 +27,33 @@ openquick deploy my-site
 This is deliberately narrower than Shopify's internal platform. Database, AI,
 file uploads, realtime, identity, and data warehouse APIs are roadmap work. The
 first milestone proves the product loop: **folder → deploy → URL**.
+
+## Agent onboarding
+
+Give an agent one canonical URL:
+
+```text
+https://open-quick-production.up.railway.app/agent.md
+```
+
+The live service also publishes:
+
+- `/join` — copyable human/agent onboarding and the current access boundary.
+- `/llms.txt` — documentation index for discovery.
+- `/skill.md` — exact deploy workflow, constraints, and receipt contract.
+- `/auth.md` — credential handling and private-preview limitations.
+- `/openapi.json` — machine-readable HTTP API.
+- `/.well-known/agent.json` — compact capability map.
+
+Deploy access currently requires an operator-provisioned token in a private
+credential store. Self-service activation and scoped, revocable agent keys are
+roadmap work; the onboarding documents do not ask for secrets in chat.
+
+## Examples
+
+- [`examples/hello`](./examples/hello) is the smallest valid static site.
+- [`examples/signal-room`](./examples/signal-room) is a polished, interactive
+  zero-backend app with local persistence and no build step.
 
 ## Local development
 

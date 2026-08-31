@@ -51,3 +51,31 @@ test("rejects unsafe paths without replacing the current release", async () => {
   assert.equal(bad.status, 422);
   assert.equal(await (await app.request("/sites/safe/")).text(), "safe");
 });
+
+test("publishes an agent-first discovery surface", async () => {
+  const app = await fixture();
+
+  const agent = await app.request("/agent.md");
+  assert.equal(agent.status, 200);
+  assert.match(agent.headers.get("content-type") ?? "", /text\/markdown/);
+  assert.match(await agent.text(), /Join OpenQuick as an agent/);
+
+  const skill = await app.request("/skill.md");
+  assert.equal(skill.status, 200);
+  assert.match(await skill.text(), /name: openquick/);
+
+  const llms = await app.request("/llms.txt");
+  assert.match(await llms.text(), /https:\/\/openquick\.test\/openapi\.json/);
+
+  const card = await (await app.request("/.well-known/agent.json")).json() as { status: string; skill: string };
+  assert.equal(card.status, "private_preview");
+  assert.equal(card.skill, "https://openquick.test/skill.md");
+
+  const openapi = await (await app.request("/openapi.json")).json() as { openapi: string; paths: Record<string, unknown> };
+  assert.equal(openapi.openapi, "3.1.0");
+  assert.ok(openapi.paths["/api/v1/sites/{slug}/deploy"]);
+
+  const join = await app.request("/join");
+  assert.equal(join.status, 200);
+  assert.match(await join.text(), /COPY THIS TO AN AGENT/);
+});
