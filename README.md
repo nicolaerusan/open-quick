@@ -44,6 +44,7 @@ The live service also publishes:
 - `/auth.md` — credential handling and private-preview limitations.
 - `/openapi.json` — machine-readable HTTP API.
 - `/.well-known/agent.json` — compact capability map.
+- `/.well-known/openquick-release.json` — credential-free production revision attestation.
 
 Deploy access currently requires an operator-provisioned token in a private
 credential store. Self-service activation and scoped, revocable agent keys are
@@ -83,6 +84,15 @@ npm run build
 3. Set `DATA_DIR=/data` and a long random `OPENQUICK_ADMIN_TOKEN`.
 4. Optionally set `BASE_URL` to the service's public HTTPS origin.
 5. Generate a Railway domain. The service health check is `/healthz`.
+6. At promotion (task #99), set these Docker build args / runtime env vars so
+   production can attest the exact Space-main pin. Production refuses to listen
+   if any are missing or malformed. Do not fall back to `RAILWAY_GIT_COMMIT_SHA`.
+   - `OPENQUICK_SOURCE_REVISION` — 40-character lowercase git SHA of the
+     promoted Space-main commit
+   - `OPENQUICK_BUILT_AT` — RFC 3339 UTC build timestamp
+   - `OPENQUICK_DEPLOYMENT_ID` — opaque Railway deployment/release id (not a secret)
+7. After deploy, verify with:
+   `node scripts/assert-production-revision.mjs --host https://<origin> --expect <sha>`
 
 The initial topology is intentionally a single service and volume, matching the
 constraint-driven spirit of Quick. Before using OpenQuick for untrusted public

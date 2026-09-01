@@ -17,6 +17,7 @@ Status: private preview. Public discovery is open; deploy credentials are minted
 
 ## Public endpoints
 - [Health](${baseUrl}/healthz)
+- [Production revision](${baseUrl}/.well-known/openquick-release.json)
 - [Sites API](${baseUrl}/api/v1/sites)
 - [Live sites](${baseUrl}/#sites)
 
@@ -39,7 +40,7 @@ OpenQuick turns a local folder containing an \`index.html\` into a live static s
 
 - Host: ${baseUrl}
 - Status: private preview
-- Public access: capability discovery, health, typed site listing/detail reads, and hosted sites
+- Public access: capability discovery, health, production revision attestation, typed site listing/detail reads, and hosted sites
 - Write access: operator token or a browser-approved agent deploy credential
 - Limits: static files only; maximum decoded release size is 25 MB
 - Deploy behavior: one atomic release replaces the selected site slug
@@ -84,12 +85,17 @@ If you do not have a private credential sink, stop after public discovery. The s
 
 Deploy a disposable slug, verify its HTML and one linked asset, redeploy a changed version to the same slug, and confirm the mutable URL now serves the new release while the first \`releaseUrl\` still serves the original bytes. Do not overwrite a slug you do not own.
 
+## Production revision
+
+Credential-free GET ${baseUrl}/.well-known/openquick-release.json returns the exact Space-main git SHA this process was built to serve (\`sourceRevision\`), plus \`builtAt\` and an opaque \`deploymentId\`. Cache-Control is no-store. Production fails closed unless those values were injected at authorized build/deploy (\`OPENQUICK_SOURCE_REVISION\`, \`OPENQUICK_BUILT_AT\`, \`OPENQUICK_DEPLOYMENT_ID\`). Do not trust request parameters, GitHub main, or hosted files for this pin.
+
 ## Machine-readable resources
 
 - ${baseUrl}/llms.txt
 - ${baseUrl}/skill.md
 - ${baseUrl}/openapi.json
 - ${baseUrl}/.well-known/agent.json
+- ${baseUrl}/.well-known/openquick-release.json
 `;
 }
 
@@ -136,7 +142,7 @@ Service version: ${version}
 
 ## API
 
-Read ${baseUrl}/openapi.json for request and response schemas. Public discovery and reads (health, site list, site detail, site-detail 404) need no token and expose typed application/json response schemas; authenticated deploys use bearer authentication with typed DeployReceipt/ErrorEnvelope responses.
+Read ${baseUrl}/openapi.json for request and response schemas. Public discovery and reads (health, production revision attestation at \`/.well-known/openquick-release.json\`, site list, site detail, site-detail 404) need no token and expose typed application/json response schemas; authenticated deploys use bearer authentication with typed DeployReceipt/ErrorEnvelope responses.
 `;
 }
 
@@ -181,8 +187,9 @@ export function agentCard(baseUrl: string): Record<string, unknown> {
     skill: `${baseUrl}/skill.md`,
     authentication: `${baseUrl}/auth.md`,
     openapi: `${baseUrl}/openapi.json`,
+    release: `${baseUrl}/.well-known/openquick-release.json`,
     capabilities: {
-      public: ["health", "list_sites", "read_site"],
+      public: ["health", "list_sites", "read_site", "read_production_revision"],
       authenticated: ["deploy_static_site"],
       connection: ["start_agent_connection", "human_approve", "private_poll"],
       planned: ["scoped_credentials", "revocation_ui", "mcp"],
@@ -208,6 +215,23 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
             "200": {
               description: "Healthy",
               content: { "application/json": { schema: { $ref: "#/components/schemas/HealthResponse" } } },
+            },
+          },
+        },
+      },
+      "/.well-known/openquick-release.json": {
+        get: {
+          operationId: "getOpenQuickRelease",
+          summary: "Public production revision attestation",
+          description: "Credential-free attestation of the exact Space-main revision this process was built to serve. Values are injected at authorized build/deploy. Cache-Control: no-store. Production processes refuse to listen without valid metadata.",
+          responses: {
+            "200": {
+              description: "Pinned production revision",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/OpenQuickRelease" } } },
+            },
+            "404": {
+              description: "Attestation not configured (non-production only)",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/SiteNotFoundError" } } },
             },
           },
         },
@@ -334,6 +358,31 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
           required: ["ok"],
           properties: {
             ok: { type: "boolean", const: true },
+          },
+        },
+        OpenQuickRelease: {
+          type: "object",
+          additionalProperties: false,
+          required: ["schema", "service", "sourceRevision", "builtAt", "deploymentId"],
+          properties: {
+            schema: { type: "string", const: "openquick-release/v1" },
+            service: { type: "string", const: "openquick", description: "Stable application identity." },
+            sourceRevision: {
+              type: "string",
+              pattern: "^[0-9a-f]{40}$",
+              description: "Exact 40-character lowercase git SHA of the promoted Space-main commit. Injected at authorized build/deploy; never derived from a request or hosted file.",
+            },
+            builtAt: {
+              type: "string",
+              format: "date-time",
+              description: "RFC 3339 UTC timestamp of the authorized build.",
+            },
+            deploymentId: {
+              type: "string",
+              minLength: 1,
+              pattern: "^\\S{1,256}$",
+              description: "Opaque operator-supplied Railway deployment or release identifier. Not a secret.",
+            },
           },
         },
         SiteRecord: {

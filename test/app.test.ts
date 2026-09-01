@@ -94,16 +94,22 @@ test("publishes an agent-first discovery surface", async () => {
   assert.match(skillText, /immutable `\/sites\/\{slug\}\/releases\/\{releaseId\}\//);
 
   const llms = await app.request("/llms.txt");
-  assert.match(await llms.text(), /https:\/\/openquick\.test\/openapi\.json/);
+  const llmsText = await llms.text();
+  assert.match(llmsText, /https:\/\/openquick\.test\/openapi\.json/);
+  assert.match(llmsText, /\.well-known\/openquick-release\.json/);
 
-  const card = await (await app.request("/.well-known/agent.json")).json() as { status: string; skill: string };
+  assert.match(agentText, /\.well-known\/openquick-release\.json/);
+
+  const card = await (await app.request("/.well-known/agent.json")).json() as { status: string; skill: string; release: string };
   assert.equal(card.status, "private_preview");
   assert.equal(card.skill, "https://openquick.test/skill.md");
+  assert.equal(card.release, "https://openquick.test/.well-known/openquick-release.json");
 
   const openapi = await (await app.request("/openapi.json")).json() as { openapi: string; paths: Record<string, unknown> };
   assert.equal(openapi.openapi, "3.1.0");
   assert.ok(openapi.paths["/api/v1/sites/{slug}/deploy"]);
   assert.ok(openapi.paths["/sites/{slug}/releases/{releaseId}/"]);
+  assert.ok(openapi.paths["/.well-known/openquick-release.json"]);
 
   const join = await app.request("/join");
   assert.equal(join.status, 200);

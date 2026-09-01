@@ -1,25 +1,23 @@
 import { serve } from "@hono/node-server";
 import { ActivationStore } from "./activation.js";
 import { createApp } from "./app.js";
+import { loadBootConfig } from "./boot.js";
 import { SiteStore } from "./store.js";
 
-const port = Number(process.env.PORT ?? "3000");
-const dataDir = process.env.DATA_DIR ?? ".data";
-const adminToken = process.env.OPENQUICK_ADMIN_TOKEN ?? (process.env.NODE_ENV === "production" ? "" : "dev-token");
+const boot = loadBootConfig(process.env);
 
-if (!adminToken) throw new Error("OPENQUICK_ADMIN_TOKEN is required in production");
-
-const store = new SiteStore(dataDir);
-const activations = new ActivationStore(dataDir);
+const store = new SiteStore(boot.dataDir);
+const activations = new ActivationStore(boot.dataDir);
 await store.initialize();
 await activations.initialize();
 const app = createApp({
   store,
   activations,
-  adminToken,
-  ...(process.env.BASE_URL ? { baseUrl: process.env.BASE_URL.replace(/\/$/, "") } : {}),
+  adminToken: boot.adminToken,
+  ...(boot.baseUrl ? { baseUrl: boot.baseUrl } : {}),
+  ...(boot.attestation ? { attestation: boot.attestation } : {}),
 });
 
-serve({ fetch: app.fetch, port }, (info) => {
+serve({ fetch: app.fetch, port: boot.port }, (info) => {
   console.log(`OpenQuick listening on http://localhost:${info.port}`);
 });

@@ -58,6 +58,7 @@ test("deploy response payloads satisfy the published OpenAPI contract", async ()
     "DeployReceipt",
     "ErrorEnvelope",
     "HealthResponse",
+    "OpenQuickRelease",
     "SiteDetailResponse",
     "SiteListResponse",
     "SiteNotFoundError",
@@ -132,6 +133,7 @@ test("public-read response payloads satisfy the published OpenAPI contract", asy
   const document = await (await app.request("/openapi.json")).json() as OpenApiDocument;
 
   assert.equal(pathResponseSchemaRef(document, "/healthz", "get", "200"), "#/components/schemas/HealthResponse");
+  assert.equal(pathResponseSchemaRef(document, "/.well-known/openquick-release.json", "get", "200"), "#/components/schemas/OpenQuickRelease");
   assert.equal(pathResponseSchemaRef(document, "/api/v1/sites", "get", "200"), "#/components/schemas/SiteListResponse");
   assert.equal(pathResponseSchemaRef(document, "/api/v1/sites/{slug}", "get", "200"), "#/components/schemas/SiteDetailResponse");
   assert.equal(pathResponseSchemaRef(document, "/api/v1/sites/{slug}", "get", "404"), "#/components/schemas/SiteNotFoundError");
@@ -183,5 +185,53 @@ test("public-read response payloads satisfy the published OpenAPI contract", asy
   assert.ok(validateDetail(detailBody), JSON.stringify(validateDetail.errors));
   assert.equal(Object.keys(detailBody as object).sort().join(","), "site");
   assert.notEqual(Object.keys(listed).sort().join(","), Object.keys(detailBody as object).sort().join(","));
+});
+
+
+test("production revision attestation satisfies the published OpenAPI contract", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openquick-contract-release-"));
+  roots.push(root);
+  const store = new SiteStore(root);
+  const activations = new ActivationStore(root);
+  await store.initialize();
+  await activations.initialize();
+  const attestation = {
+    schema: "openquick-release/v1" as const,
+    service: "openquick" as const,
+    sourceRevision: "d91882294951c432689671d7da4908c70721438d",
+    builtAt: "2026-09-01T12:00:00Z",
+    deploymentId: "railway-deploy-example",
+  };
+  const app = createApp({
+    store,
+    activations,
+    adminToken: "test-token",
+    baseUrl: "https://openquick.test",
+    attestation,
+  });
+  const document = await (await app.request("/openapi.json")).json() as OpenApiDocument;
+  const schema = document.components.schemas.OpenQuickRelease as {
+    additionalProperties?: boolean;
+    required?: string[];
+    properties?: Record<string, { const?: string; pattern?: string; format?: string }>;
+  };
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(schema.required, ["schema", "service", "sourceRevision", "builtAt", "deploymentId"]);
+  assert.equal(schema.properties?.schema?.const, "openquick-release/v1");
+  assert.equal(schema.properties?.service?.const, "openquick");
+  assert.equal(schema.properties?.sourceRevision?.pattern, "^[0-9a-f]{40}$");
+  assert.equal(schema.properties?.builtAt?.format, "date-time");
+
+  const schemaId = "https://openquick.test/openapi-release.json";
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
+  addFormats(ajv);
+  ajv.addSchema({ ...document, $id: schemaId });
+  const validate = ajv.compile({ $ref: `${schemaId}#/components/schemas/OpenQuickRelease` });
+
+  const response = await app.request("/.well-known/openquick-release.json");
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.ok(validate(body), JSON.stringify(validate.errors));
+  assert.deepEqual(body, attestation);
 });
 

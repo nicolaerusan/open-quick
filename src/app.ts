@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { logger } from "hono/logger";
+import type { OpenQuickRelease } from "./release-attestation.js";
 import type { DeployErrorCode, DeployErrorResponse, DeployPayload } from "./types.js";
 import { ActivationStore } from "./activation.js";
 import { MAX_DEPLOY_BYTES, SiteStore } from "./store.js";
@@ -10,6 +11,7 @@ type AppOptions = {
   activations: ActivationStore;
   adminToken: string;
   baseUrl?: string;
+  attestation?: OpenQuickRelease;
 };
 
 function deployError(code: DeployErrorCode, error: string): DeployErrorResponse {
@@ -112,6 +114,10 @@ export function createApp(options: AppOptions): Hono {
   app.use(logger());
 
   app.get("/healthz", (c) => c.json({ ok: true }));
+  app.get("/.well-known/openquick-release.json", (c) => {
+    if (!options.attestation) return c.json({ error: "Not found" }, 404);
+    return c.json(options.attestation, 200, { "cache-control": "no-store" });
+  });
   app.get("/llms.txt", (c) => {
     const origin = options.baseUrl || new URL(c.req.url).origin;
     return c.text(llmsTxt(origin), 200, { "content-type": "text/plain; charset=UTF-8" });
