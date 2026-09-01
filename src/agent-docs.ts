@@ -39,7 +39,7 @@ OpenQuick turns a local folder containing an \`index.html\` into a live static s
 
 - Host: ${baseUrl}
 - Status: private preview
-- Public access: capability discovery, health, site listing, and hosted sites
+- Public access: capability discovery, health, typed site listing/detail reads, and hosted sites
 - Write access: operator token or a browser-approved agent deploy credential
 - Limits: static files only; maximum decoded release size is 25 MB
 - Deploy behavior: one atomic release replaces the selected site slug
@@ -130,7 +130,7 @@ Service version: ${version}
 
 ## API
 
-Read ${baseUrl}/openapi.json for request and response schemas. Public discovery and reads need no token; deploys use bearer authentication.
+Read ${baseUrl}/openapi.json for request and response schemas. Public discovery and reads (health, site list, site detail, site-detail 404) need no token and expose typed application/json response schemas; authenticated deploys use bearer authentication with typed DeployReceipt/ErrorEnvelope responses.
 `;
 }
 
@@ -195,16 +195,44 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
     servers: [{ url: baseUrl }],
     paths: {
       "/healthz": {
-        get: { operationId: "getHealth", summary: "Check service health", responses: { "200": { description: "Healthy" } } },
+        get: {
+          operationId: "getHealth",
+          summary: "Check service health",
+          responses: {
+            "200": {
+              description: "Healthy",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/HealthResponse" } } },
+            },
+          },
+        },
       },
       "/api/v1/sites": {
-        get: { operationId: "listSites", summary: "List deployed sites", responses: { "200": { description: "Site list" } } },
+        get: {
+          operationId: "listSites",
+          summary: "List deployed sites",
+          responses: {
+            "200": {
+              description: "Site list",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/SiteListResponse" } } },
+            },
+          },
+        },
       },
       "/api/v1/sites/{slug}": {
         get: {
-          operationId: "getSite", summary: "Get site metadata",
+          operationId: "getSite",
+          summary: "Get site metadata",
           parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string", pattern: "^[a-z0-9-]+$" } }],
-          responses: { "200": { description: "Site metadata" }, "404": { description: "Site not found" } },
+          responses: {
+            "200": {
+              description: "Site metadata",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/SiteDetailResponse" } } },
+            },
+            "404": {
+              description: "Site not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/SiteNotFoundError" } } },
+            },
+          },
         },
       },
       "/api/v1/agent-connections": {
@@ -266,10 +294,18 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
     components: {
       securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } },
       schemas: {
+        HealthResponse: {
+          type: "object",
+          additionalProperties: false,
+          required: ["ok"],
+          properties: {
+            ok: { type: "boolean", const: true },
+          },
+        },
         SiteRecord: {
           type: "object",
           additionalProperties: false,
-          required: ["slug", "releaseId", "fileCount", "totalBytes", "createdAt", "updatedAt", "deployedBy"],
+          required: ["slug", "releaseId", "fileCount", "totalBytes", "createdAt", "updatedAt"],
           properties: {
             slug: { type: "string", pattern: "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$" },
             releaseId: { type: "string", minLength: 1 },
@@ -277,7 +313,31 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
             totalBytes: { type: "integer", minimum: 0 },
             createdAt: { type: "string", format: "date-time" },
             updatedAt: { type: "string", format: "date-time" },
-            deployedBy: { type: "string", minLength: 1, description: "Public agent handle. Never the deploy secret." },
+            deployedBy: { type: "string", minLength: 1, description: "Public agent handle when known. Never the deploy secret. Optional on older public-read records." },
+          },
+        },
+        SiteListResponse: {
+          type: "object",
+          additionalProperties: false,
+          required: ["sites"],
+          properties: {
+            sites: { type: "array", items: { $ref: "#/components/schemas/SiteRecord" } },
+          },
+        },
+        SiteDetailResponse: {
+          type: "object",
+          additionalProperties: false,
+          required: ["site"],
+          properties: {
+            site: { $ref: "#/components/schemas/SiteRecord" },
+          },
+        },
+        SiteNotFoundError: {
+          type: "object",
+          additionalProperties: false,
+          required: ["error"],
+          properties: {
+            error: { type: "string", minLength: 1, description: "Stable public-read not-found message. No code field on this path." },
           },
         },
         DeployReceipt: {
