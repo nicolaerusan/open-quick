@@ -65,9 +65,10 @@ async function deploy(directory: string, args: string[]): Promise<void> {
     body: JSON.stringify({ files }),
     redirect: "error",
   });
-  const body = await response.json() as { url?: string; error?: string; site?: { releaseId?: string } };
+  const body = await response.json() as { url?: string; releaseUrl?: string; error?: string; site?: { releaseId?: string } };
   if (!response.ok) throw new Error(body.error ?? `Deploy failed (${response.status})`);
   console.log(`Deployed ${files.length} file${files.length === 1 ? "" : "s"} to ${body.url}`);
+  if (body.releaseUrl) console.log(`Release URL ${body.releaseUrl}`);
   if (body.site?.releaseId) console.log(`Release ${body.site.releaseId}`);
 }
 

@@ -102,7 +102,8 @@ stronger isolation model.
 ```
 
 Authenticate with `Authorization: Bearer $OPENQUICK_ADMIN_TOKEN`. A successful
-response includes the site record, immutable release identifier, and public URL.
+response includes the site record, mutable public URL (`url`), and immutable
+release permalink (`releaseUrl`).
 
 ## License
 

@@ -67,6 +67,20 @@ function originOf(options: AppOptions, url: string): string {
   return options.baseUrl || new URL(url).origin;
 }
 
+function assetResponse(asset: { bytes: Uint8Array; contentType: string }, cacheControl: string): Response {
+  const body = asset.bytes.buffer.slice(
+    asset.bytes.byteOffset,
+    asset.bytes.byteOffset + asset.bytes.byteLength,
+  ) as ArrayBuffer;
+  return new Response(body, {
+    headers: {
+      "content-type": asset.contentType,
+      "cache-control": cacheControl,
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
+
 function connectApprovePage(handle: string, id: string): string {
   const safeHandle = escapeHtml(handle);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Approve OpenQuick agent</title>
@@ -210,12 +224,29 @@ export function createApp(options: AppOptions): Hono {
       const payload = await c.req.json<DeployPayload>();
       const site = await options.store.deploy(c.req.param("slug"), payload.files, identity.handle);
       const origin = originOf(options, c.req.url);
-      return c.json({ site, url: `${origin}/sites/${encodeURIComponent(site.slug)}/` }, 201);
+      const url = `${origin}/sites/${encodeURIComponent(site.slug)}/`;
+      const releaseUrl = `${origin}/sites/${encodeURIComponent(site.slug)}/releases/${encodeURIComponent(site.releaseId)}/`;
+      return c.json({ site, url, releaseUrl }, 201);
     } catch {
       // Keep validation responses stable and safe. Store and parser errors can
       // contain user paths or provider details that must not cross the API.
       return c.json(deployError("invalid_deployment", "Deployment validation failed"), 422);
     }
+  });
+  app.get("/sites/:slug/releases/:releaseId", (c) => {
+    const slug = encodeURIComponent(c.req.param("slug"));
+    const releaseId = encodeURIComponent(c.req.param("releaseId"));
+    return c.redirect(`/sites/${slug}/releases/${releaseId}/`, 308);
+  });
+  app.get("/sites/:slug/releases/:releaseId/*", async (c) => {
+    const slug = c.req.param("slug");
+    const releaseId = c.req.param("releaseId");
+    const prefix = `/sites/${slug}/releases/${releaseId}/`;
+    const path = new URL(c.req.url).pathname.slice(prefix.length);
+    try {
+      const asset = await options.store.assetAtRelease(slug, releaseId, path);
+      return assetResponse(asset, "public, max-age=31536000, immutable");
+    } catch { return c.text("Site or asset not found", 404); }
   });
   app.get("/sites/:slug", (c) => c.redirect(`/sites/${encodeURIComponent(c.req.param("slug"))}/`, 308));
   app.get("/sites/:slug/*", async (c) => {
@@ -223,17 +254,7 @@ export function createApp(options: AppOptions): Hono {
     const path = new URL(c.req.url).pathname.slice(prefix.length);
     try {
       const asset = await options.store.asset(c.req.param("slug"), path);
-      const body = asset.bytes.buffer.slice(
-        asset.bytes.byteOffset,
-        asset.bytes.byteOffset + asset.bytes.byteLength,
-      ) as ArrayBuffer;
-      return new Response(body, {
-        headers: {
-          "content-type": asset.contentType,
-          "cache-control": asset.path === "index.html" ? "no-cache" : "public, max-age=300",
-          "x-content-type-options": "nosniff",
-        },
-      });
+      return assetResponse(asset, asset.path === "index.html" ? "no-cache" : "public, max-age=300");
     } catch { return c.text("Site or asset not found", 404); }
   });
   app.get("/", async (c) => {

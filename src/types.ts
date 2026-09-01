@@ -27,6 +27,7 @@ export type SiteRecord = {
 export type DeployReceipt = {
   site: SiteRecord;
   url: string;
+  releaseUrl: string;
 };
 
 export type StoredAsset = {

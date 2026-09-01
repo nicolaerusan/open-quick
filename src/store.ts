@@ -11,6 +11,17 @@ export const SITE_SLUG = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 type PreparedFile = { path: string; bytes: Buffer };
 
+/** Reject traversal, temps, and anything that is not a single release folder name. */
+export function isValidReleaseId(releaseId: string): boolean {
+  if (typeof releaseId !== "string" || releaseId.length === 0 || releaseId.length > 128) return false;
+  if (releaseId.includes("\0") || releaseId.includes("/") || releaseId.includes("\\")) return false;
+  if (releaseId.includes("..") || releaseId.startsWith(".")) return false;
+  if (/\s/.test(releaseId)) return false;
+  if (posix.basename(releaseId) !== releaseId) return false;
+  if (posix.normalize(releaseId) !== releaseId) return false;
+  return true;
+}
+
 function safeAssetPath(input: string): string {
   const normalized = posix.normalize(input.replaceAll("\\", "/")).replace(/^\.\//, "");
   if (
@@ -127,7 +138,24 @@ export class SiteStore {
 
   async asset(slug: string, requested: string): Promise<StoredAsset> {
     const record = await this.site(slug);
-    const releaseRoot = join(this.root, "sites", slug, "releases", record.releaseId);
+    return this.readReleaseAsset(slug, record.releaseId, requested);
+  }
+
+  async assetAtRelease(slug: string, releaseId: string, requested: string): Promise<StoredAsset> {
+    if (!SITE_SLUG.test(slug)) throw new Error("Invalid site slug");
+    if (!isValidReleaseId(releaseId)) throw new Error("Invalid release id");
+    return this.readReleaseAsset(slug, releaseId, requested);
+  }
+
+  private async readReleaseAsset(slug: string, releaseId: string, requested: string): Promise<StoredAsset> {
+    if (!isValidReleaseId(releaseId)) throw new Error("Invalid release id");
+    const releasesRoot = join(this.root, "sites", slug, "releases");
+    const releaseRoot = contained(releasesRoot, releaseId);
+    const metaRaw = await readFile(join(releaseRoot, "_openquick-release.json"), "utf8").catch(() => null);
+    if (!metaRaw) throw new Error("Release not found");
+    const record = JSON.parse(metaRaw) as SiteRecord;
+    if (record.slug !== slug || record.releaseId !== releaseId) throw new Error("Release not found");
+
     let path = safeAssetPath(requested || "index.html");
     let target = contained(releaseRoot, path);
     let info = await stat(target).catch(() => null);

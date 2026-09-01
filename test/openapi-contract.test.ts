@@ -65,6 +65,9 @@ test("deploy response payloads satisfy the published OpenAPI contract", async ()
   ]);
   assert.ok(document.paths["/api/v1/agent-connections"]);
   assert.equal(responseSchemaRef(document, "201"), "#/components/schemas/DeployReceipt");
+  const receiptSchema = document.components.schemas.DeployReceipt as { required?: string[]; properties?: Record<string, unknown> };
+  assert.deepEqual(receiptSchema.required, ["site", "url", "releaseUrl"]);
+  assert.ok(receiptSchema.properties?.releaseUrl);
   for (const status of ["401", "413", "422"]) {
     assert.equal(responseSchemaRef(document, status), "#/components/schemas/ErrorEnvelope");
   }
@@ -113,12 +116,15 @@ test("deploy response payloads satisfy the published OpenAPI contract", async ()
     body: JSON.stringify({ files: [{ path: "index.html", content: Buffer.from("<h1>Hello</h1>").toString("base64") }] }),
   });
   assert.equal(deployed.status, 201);
-  const receipt = await deployed.json();
+  const receipt = await deployed.json() as { url: string; releaseUrl: string; site: JsonObject & { releaseId: string; deployedBy: string } };
   assert.ok(validateReceipt(receipt), JSON.stringify(validateReceipt.errors));
-  assert.deepEqual(Object.keys((receipt as { site: JsonObject }).site).sort(), [
+  assert.equal(receipt.url, "https://openquick.test/sites/demo/");
+  assert.equal(receipt.releaseUrl, `https://openquick.test/sites/demo/releases/${receipt.site.releaseId}/`);
+  assert.deepEqual(Object.keys(receipt).sort(), ["releaseUrl", "site", "url"]);
+  assert.deepEqual(Object.keys(receipt.site).sort(), [
     "createdAt", "deployedBy", "fileCount", "releaseId", "slug", "totalBytes", "updatedAt",
   ]);
-  assert.equal((receipt as { site: { deployedBy: string } }).site.deployedBy, "operator");
+  assert.equal(receipt.site.deployedBy, "operator");
 });
 
 test("public-read response payloads satisfy the published OpenAPI contract", async () => {

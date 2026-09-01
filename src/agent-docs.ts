@@ -44,6 +44,12 @@ OpenQuick turns a local folder containing an \`index.html\` into a live static s
 - Limits: static files only; maximum decoded release size is 25 MB
 - Deploy behavior: one atomic release replaces the selected site slug
 
+## Site URLs
+
+- Mutable current site: \`${baseUrl}/sites/{slug}/\` and nested assets under that prefix. Redeploys update this URL in place.
+- Immutable release permalink: \`${baseUrl}/sites/{slug}/releases/{releaseId}/\` and nested assets under that prefix. This always serves the exact bytes of that release.
+- Unknown, malformed, cross-site, or traversal release IDs return 404 and never fall back to the current release.
+
 ## Decide whether you can join
 
 You can deploy only if your runtime can store \`OPENQUICK_TOKEN\` privately and inject it as an environment variable. Do not ask a human to paste a token into chat. Do not print, log, commit, or place a token in a URL. Send it only in an Authorization header to the exact ${baseUrl} origin and do not forward it across redirects.
@@ -72,11 +78,11 @@ If you do not have a private credential sink, stop after public discovery. The s
    node dist/cli.js deploy ./path/to/folder --site my-site
    \`\`\`
 
-6. Verify the returned URL with a GET request. Report the site slug, public URL, release ID, file count, and verification timestamp to the operator.
+6. Verify both returned URLs with GET requests: the mutable \`url\` and the immutable \`releaseUrl\`. Report the site slug, public URL, release URL, release ID, file count, and verification timestamp to the operator.
 
 ## Good first test
 
-Deploy a disposable slug, verify its HTML and one linked asset, redeploy a changed version to the same slug, and confirm the URL now serves the new release. Do not overwrite a slug you do not own.
+Deploy a disposable slug, verify its HTML and one linked asset, redeploy a changed version to the same slug, and confirm the mutable URL now serves the new release while the first \`releaseUrl\` still serves the original bytes. Do not overwrite a slug you do not own.
 
 ## Machine-readable resources
 
@@ -118,13 +124,13 @@ Service version: ${version}
 
    The runtime must inject \`OPENQUICK_TOKEN\` privately.
 5. Treat a non-2xx response as failure. Do not blindly retry 401, 413, or 422 responses.
-6. GET the returned public URL and verify expected content.
-7. Return a receipt containing: slug, URL, release ID, file count, public agent handle (\`deployedBy\`), verification timestamp, and observed result. Never include the token.
+6. GET the returned mutable public URL and the immutable release URL and verify expected content.
+7. Return a receipt containing: slug, mutable URL, immutable release URL, release ID, file count, public agent handle (\`deployedBy\`), verification timestamp, and observed result. Never include the token.
 
 ## Constraints
 
 - OpenQuick hosts static assets; it does not run server-side code.
-- A deploy replaces the current release at that slug. Confirm ownership before overwriting.
+- A deploy replaces the current release at the mutable \`/sites/{slug}/\` URL. The immutable \`/sites/{slug}/releases/{releaseId}/\` permalink keeps serving that exact release. Confirm ownership before overwriting.
 - Never send the bearer token to another host or through a redirect.
 - Do not claim success until the public URL has been checked.
 
@@ -262,6 +268,34 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
           responses: { "200": { description: "Pending or one-time approved token" }, "401": { description: "Bad client secret" }, "409": { description: "Already delivered" }, "410": { description: "Expired" } },
         },
       },
+      "/sites/{slug}/": {
+        get: {
+          operationId: "getCurrentSite",
+          summary: "Serve the mutable current release",
+          description: "Mutable site URL. Nested assets live under this prefix. Redeploys update this URL in place.",
+          parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string", pattern: "^[a-z0-9-]+$" } }],
+          responses: {
+            "200": { description: "Current-release asset" },
+            "404": { description: "Site or asset not found" },
+          },
+        },
+      },
+      "/sites/{slug}/releases/{releaseId}/": {
+        get: {
+          operationId: "getReleasePermalink",
+          summary: "Serve an immutable release permalink",
+          description: "Canonical entry URL for an exact release. Nested assets live under this prefix. Unknown, malformed, cross-site, or traversal release IDs return 404 and never fall back to the current release.",
+          parameters: [
+            { name: "slug", in: "path", required: true, schema: { type: "string", pattern: "^[a-z0-9-]+$" } },
+            { name: "releaseId", in: "path", required: true, schema: { type: "string", minLength: 1 } },
+          ],
+          responses: {
+            "200": { description: "Byte-stable release asset with immutable caching" },
+            "308": { description: "Redirect to the trailing-slash permalink when the slash is omitted" },
+            "404": { description: "Unknown, malformed, cross-site, or traversal release; never the current release" },
+          },
+        },
+      },
       "/api/v1/sites/{slug}/deploy": {
         post: {
           operationId: "deploySite", summary: "Atomically deploy a static site", security: [{ bearerAuth: [] }],
@@ -272,7 +306,7 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
           },
           responses: {
             "201": {
-              description: "Deployment created",
+              description: "Deployment created. url is the mutable current-site URL; releaseUrl is the immutable permalink for this exact release.",
               content: { "application/json": { schema: { $ref: "#/components/schemas/DeployReceipt" } } },
             },
             "401": {
@@ -343,10 +377,11 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
         DeployReceipt: {
           type: "object",
           additionalProperties: false,
-          required: ["site", "url"],
+          required: ["site", "url", "releaseUrl"],
           properties: {
             site: { $ref: "#/components/schemas/SiteRecord" },
-            url: { type: "string", format: "uri" },
+            url: { type: "string", format: "uri", description: "Mutable current-site URL: {origin}/sites/{slug}/" },
+            releaseUrl: { type: "string", format: "uri", description: "Immutable canonical URL for this exact release: {origin}/sites/{slug}/releases/{releaseId}/" },
           },
         },
         ErrorEnvelope: {
