@@ -1,11 +1,13 @@
 import { Hono } from "hono";
 import { logger } from "hono/logger";
 import type { DeployErrorCode, DeployErrorResponse, DeployPayload } from "./types.js";
+import { ActivationStore } from "./activation.js";
 import { MAX_DEPLOY_BYTES, SiteStore } from "./store.js";
 import { agentCard, agentMarkdown, authMarkdown, llmsTxt, openApiDocument, skillMarkdown } from "./agent-docs.js";
 
 type AppOptions = {
   store: SiteStore;
+  activations: ActivationStore;
   adminToken: string;
   baseUrl?: string;
 };
@@ -54,10 +56,41 @@ footer{margin-top:100px;padding-top:34px;padding-bottom:60px;border-top:1px soli
 }
 
 function joinPage(baseUrl: string): string {
-  const prompt = `Open ${baseUrl}/agent.md. Assess whether you can store a deploy credential privately. If you can, follow the first-deploy workflow and return a verified deployment receipt. If you cannot, stop after public discovery and explain what private credential capability is missing.`;
+  const prompt = `Open ${baseUrl}/agent.md. If you can store a credential privately, POST ${baseUrl}/api/v1/agent-connections with a proposed handle and privateSink:true, ask a human to open the returned approval URL, then poll for the deploy token into your private sink. Never paste the token in chat. Deploy, verify, and return a receipt with the public handle.` ;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Join OpenQuick as an agent</title><style>
 :root{color-scheme:dark;--ink:#f5f2e9;--muted:#aaa79f;--line:#373733;--lime:#c9ff38;--orange:#ff6b35}*{box-sizing:border-box}body{margin:0;background:#0d0d0c;color:var(--ink);font-family:Inter,system-ui,sans-serif}main{max-width:1050px;margin:auto;padding:36px 28px 90px}nav{display:flex;justify-content:space-between;padding-bottom:28px;border-bottom:1px solid var(--line);font:800 12px ui-monospace,monospace}a{color:var(--lime)}.hero{padding:80px 0 54px}small{font:800 11px ui-monospace,monospace;color:var(--lime);letter-spacing:.13em}h1{font-size:clamp(56px,10vw,112px);line-height:.86;letter-spacing:-.07em;margin:24px 0 30px}.lead{font-size:21px;line-height:1.55;color:var(--muted);max-width:720px}.notice{border:1px solid var(--orange);padding:20px 22px;margin:32px 0;color:#ffd8ca}.grid{display:grid;grid-template-columns:repeat(2,1fr);border:1px solid var(--line)}article{padding:30px;min-height:225px;border-bottom:1px solid var(--line)}article:nth-child(odd){border-right:1px solid var(--line)}article:nth-last-child(-n+2){border-bottom:0}article b{font:800 12px ui-monospace,monospace;color:var(--orange)}h2{font-size:27px;letter-spacing:-.04em;margin:42px 0 12px}p{color:var(--muted);line-height:1.55}.prompt{margin-top:54px}.prompt pre{white-space:pre-wrap;background:var(--ink);color:#141412;padding:24px;font:700 13px/1.6 ui-monospace,monospace;overflow:auto}.resources{display:flex;flex-wrap:wrap;gap:18px;margin-top:30px;font:800 12px ui-monospace,monospace}@media(max-width:680px){.grid{grid-template-columns:1fr}article,article:nth-child(odd),article:nth-last-child(-n+2){border-right:0;border-bottom:1px solid var(--line)}article:last-child{border-bottom:0}}
-</style></head><body><main><nav><a href="/">← OPENQUICK</a><span>AGENT ONBOARDING / PRIVATE PREVIEW</span></nav><section class="hero"><small>CANONICAL START / 001</small><h1>JOIN.<br>DEPLOY.<br>VERIFY.</h1><p class="lead">An agent should be able to discover what OpenQuick does, determine whether it can connect safely, complete one deploy, and prove the public result without reverse-engineering the service.</p><div class="notice"><strong>Current boundary:</strong> public discovery is live. Deploy access still requires an operator to inject a token into the agent's private environment. Self-service activation is the next milestone.</div></section><section class="grid"><article><b>01 / DISCOVER</b><h2>Read one URL</h2><p><a href="/agent.md">agent.md</a> contains the live workflow, limits, safety rules, and machine-readable links.</p></article><article><b>02 / QUALIFY</b><h2>Check the runtime</h2><p>The agent confirms it can store a credential privately. If it cannot, it stops before requesting a secret in chat.</p></article><article><b>03 / DEPLOY</b><h2>Ship a disposable slug</h2><p>Build the TypeScript CLI, deploy a static folder, and receive a public URL plus release ID.</p></article><article><b>04 / VERIFY</b><h2>Return evidence</h2><p>Fetch the live page and report the slug, URL, release, file count, timestamp, and observed result.</p></article></section><section class="prompt"><small>COPY THIS TO AN AGENT</small><pre>${escapeHtml(prompt)}</pre><div class="resources"><a href="/llms.txt">LLMS.TXT</a><a href="/skill.md">SKILL.MD</a><a href="/auth.md">AUTH.MD</a><a href="/openapi.json">OPENAPI.JSON</a><a href="/.well-known/agent.json">AGENT.JSON</a></div></section></main></body></html>`;
+</style></head><body><main><nav><a href="/">← OPENQUICK</a><span>AGENT ONBOARDING / PRIVATE PREVIEW</span></nav><section class="hero"><small>CANONICAL START / 001</small><h1>JOIN.<br>DEPLOY.<br>VERIFY.</h1><p class="lead">An agent should be able to discover what OpenQuick does, determine whether it can connect safely, complete one deploy, and prove the public result without reverse-engineering the service.</p><div class="notice"><strong>Current boundary:</strong> public discovery is live. Agents may start a browser-mediated connection: a human opens one approval URL, then a deploy credential is delivered once to the agent's private poll sink. Never paste tokens in chat.</div></section><section class="grid"><article><b>01 / DISCOVER</b><h2>Read one URL</h2><p><a href="/agent.md">agent.md</a> contains the live workflow, limits, safety rules, and machine-readable links.</p></article><article><b>02 / QUALIFY</b><h2>Check the runtime</h2><p>The agent confirms it can store a credential privately. If it cannot, it stops before requesting a secret in chat.</p></article><article><b>03 / DEPLOY</b><h2>Ship a disposable slug</h2><p>Build the TypeScript CLI, deploy a static folder, and receive a public URL plus release ID.</p></article><article><b>04 / VERIFY</b><h2>Return evidence</h2><p>Fetch the live page and report the slug, URL, release, file count, timestamp, and observed result.</p></article></section><section class="prompt"><small>COPY THIS TO AN AGENT</small><pre>${escapeHtml(prompt)}</pre><div class="resources"><a href="/llms.txt">LLMS.TXT</a><a href="/skill.md">SKILL.MD</a><a href="/auth.md">AUTH.MD</a><a href="/openapi.json">OPENAPI.JSON</a><a href="/.well-known/agent.json">AGENT.JSON</a></div></section></main></body></html>`;
+}
+
+
+function originOf(options: AppOptions, url: string): string {
+  return options.baseUrl || new URL(url).origin;
+}
+
+function connectApprovePage(handle: string, id: string): string {
+  const safeHandle = escapeHtml(handle);
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Approve OpenQuick agent</title>
+<style>body{margin:0;background:#0d0d0c;color:#f5f2e9;font-family:Inter,system-ui,sans-serif}main{max-width:640px;margin:auto;padding:48px 24px}h1{letter-spacing:-.05em}p{color:#aaa79f;line-height:1.55}button{background:#c9ff38;color:#111;border:0;padding:14px 18px;font:800 13px ui-monospace,monospace;cursor:pointer}#status{margin-top:18px;font:700 13px ui-monospace,monospace}</style>
+</head><body><main><p>OPENQUICK / AGENT CONNECTION</p><h1>Approve ${safeHandle}?</h1><p>This mints a deploy credential and delivers it once to the waiting agent. The token is never shown on this page or in the URL.</p>
+<form id="approve"><button type="submit">Approve connection</button></form><p id="status"></p>
+<script>
+document.getElementById("approve").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const status = document.getElementById("status");
+  status.textContent = "Approving…";
+  const response = await fetch("/api/v1/agent-connections/${id}/approve", { method: "POST" });
+  const body = await response.json();
+  status.textContent = response.ok ? "Approved. The agent can now poll privately." : (body.error || "Approval failed");
+});
+</script></main></body></html>`;
+}
+
+async function authenticateDeploy(options: AppOptions, authorization: string | undefined): Promise<{ handle: string } | null> {
+  const prefix = "Bearer ";
+  if (!authorization?.startsWith(prefix)) return null;
+  const token = authorization.slice(prefix.length);
+  if (options.adminToken && token === options.adminToken) return { handle: "operator" };
+  return options.activations.authenticate(token);
 }
 
 export function createApp(options: AppOptions): Hono {
@@ -98,9 +131,75 @@ export function createApp(options: AppOptions): Hono {
     try { return c.json({ site: await options.store.site(c.req.param("slug")) }); }
     catch { return c.json({ error: "Site not found" }, 404); }
   });
-  app.post("/api/v1/sites/:slug/deploy", async (c) => {
+  app.post("/api/v1/agent-connections", async (c) => {
+    const origin = originOf(options, c.req.url);
+    const body = await c.req.json<{ handle?: string; privateSink?: boolean }>().catch(() => ({} as { handle?: string; privateSink?: boolean }));
+    try {
+      const started = await options.activations.start({
+        handle: body.handle ?? "",
+        privateSink: body.privateSink === true,
+        origin,
+      });
+      return c.json({
+        id: started.id,
+        handle: started.handle,
+        status: started.status,
+        approvalUrl: started.approvalUrl,
+        pollUrl: started.pollUrl,
+        expiresAt: started.expiresAt,
+        clientSecret: started.clientSecret,
+      }, 201);
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? String((error as { code: string }).code) : "";
+      if (code === "no_private_sink") {
+        return c.json({ error: "A private credential sink is required", code: "no_private_sink" }, 400);
+      }
+      return c.json({ error: "Invalid agent handle", code: "invalid_handle" }, 400);
+    }
+  });
+  app.get("/connect/:id", async (c) => {
+    const origin = originOf(options, c.req.url);
+    const activation = await options.activations.publicById(c.req.param("id"), origin);
+    if (!activation) return c.text("Activation not found", 404);
+    if (activation.status === "expired") return c.text("This activation expired", 410);
+    if (activation.status !== "pending") return c.text("This activation is no longer pending", 409);
+    return c.html(connectApprovePage(activation.handle, activation.id));
+  });
+  app.post("/api/v1/agent-connections/:id/approve", async (c) => {
+    const origin = originOf(options, c.req.url);
+    try {
+      const approved = await options.activations.approve(c.req.param("id"), origin);
+      return c.json({ id: approved.id, handle: approved.handle, status: approved.status, expiresAt: approved.expiresAt });
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? String((error as { code: string }).code) : "";
+      if (code === "expired") return c.json({ error: "Activation expired", code: "expired" }, 410);
+      if (code === "replay") return c.json({ error: "Activation is no longer pending", code: "replay" }, 409);
+      return c.json({ error: "Activation not found", code: "not_found" }, 404);
+    }
+  });
+  app.post("/api/v1/agent-connections/:id/poll", async (c) => {
+    const body = await c.req.json<{ clientSecret?: string }>().catch(() => ({} as { clientSecret?: string }));
     const authorization = c.req.header("authorization");
-    if (!options.adminToken || authorization !== `Bearer ${options.adminToken}`) {
+    const clientSecret = body.clientSecret
+      ?? (authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : "");
+    try {
+      const polled = await options.activations.poll(c.req.param("id"), clientSecret);
+      if (polled.status === "expired") {
+        return c.json({ status: "expired", error: "Activation expired", code: "expired" }, 410);
+      }
+      if (polled.status === "delivered") {
+        return c.json({ status: "delivered", handle: polled.handle, error: "Deploy credential already delivered", code: "replay" }, 409);
+      }
+      const payload: Record<string, unknown> = { status: polled.status, handle: polled.handle, expiresAt: polled.expiresAt };
+      if (polled.token) payload.token = polled.token;
+      return c.json(payload);
+    } catch {
+      return c.json({ error: "A valid client secret is required", code: "unauthorized" }, 401);
+    }
+  });
+  app.post("/api/v1/sites/:slug/deploy", async (c) => {
+    const identity = await authenticateDeploy(options, c.req.header("authorization"));
+    if (!identity) {
       return c.json(deployError("unauthorized", "A valid deploy token is required"), 401);
     }
     const length = Number(c.req.header("content-length") ?? "0");
@@ -109,8 +208,8 @@ export function createApp(options: AppOptions): Hono {
     }
     try {
       const payload = await c.req.json<DeployPayload>();
-      const site = await options.store.deploy(c.req.param("slug"), payload.files);
-      const origin = options.baseUrl || new URL(c.req.url).origin;
+      const site = await options.store.deploy(c.req.param("slug"), payload.files, identity.handle);
+      const origin = originOf(options, c.req.url);
       return c.json({ site, url: `${origin}/sites/${encodeURIComponent(site.slug)}/` }, 201);
     } catch {
       // Keep validation responses stable and safe. Store and parser errors can

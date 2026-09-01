@@ -21,6 +21,7 @@ export type SiteRecord = {
   totalBytes: number;
   createdAt: string;
   updatedAt: string;
+  deployedBy: string;
 };
 
 export type DeployReceipt = {

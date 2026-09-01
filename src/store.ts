@@ -70,7 +70,7 @@ export class SiteStore {
     await mkdir(join(this.root, "sites"), { recursive: true });
   }
 
-  async deploy(slug: string, files: DeployFile[]): Promise<SiteRecord> {
+  async deploy(slug: string, files: DeployFile[], deployedBy: string): Promise<SiteRecord> {
     if (!SITE_SLUG.test(slug)) throw new Error("Site slug must be lowercase letters, numbers, or hyphens");
     const prepared = prepareFiles(files);
     const now = new Date().toISOString();
@@ -87,6 +87,7 @@ export class SiteStore {
       totalBytes: prepared.totalBytes,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
+      deployedBy,
     };
 
     await mkdir(temporary, { recursive: true });

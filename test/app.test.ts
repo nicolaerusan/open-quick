@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
+import { ActivationStore } from "../src/activation.js";
 import { createApp } from "../src/app.js";
 import { SiteStore } from "../src/store.js";
 
@@ -13,8 +14,10 @@ async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "openquick-test-"));
   roots.push(root);
   const store = new SiteStore(root);
+  const activations = new ActivationStore(root);
   await store.initialize();
-  return createApp({ store, adminToken: "test-token", baseUrl: "https://openquick.test" });
+  await activations.initialize();
+  return createApp({ store, activations, adminToken: "test-token", baseUrl: "https://openquick.test" });
 }
 
 test("deploys and serves a static site", async () => {

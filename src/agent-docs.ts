@@ -5,7 +5,7 @@ export function llmsTxt(baseUrl: string): string {
 
 > Deploy a folder of static HTML, CSS, and JavaScript to a durable URL.
 
-Status: private preview. Public discovery is open; deploy credentials are operator-provisioned.
+Status: private preview. Public discovery is open; deploy credentials are minted through browser-mediated agent connection.
 
 ## Start here
 - [Agent entry point](${baseUrl}/agent.md): Read this first for the supported workflow and safety boundaries.
@@ -40,7 +40,7 @@ OpenQuick turns a local folder containing an \`index.html\` into a live static s
 - Host: ${baseUrl}
 - Status: private preview
 - Public access: capability discovery, health, site listing, and hosted sites
-- Write access: operator-provisioned bearer token
+- Write access: operator token or a browser-approved agent deploy credential
 - Limits: static files only; maximum decoded release size is 25 MB
 - Deploy behavior: one atomic release replaces the selected site slug
 
@@ -48,13 +48,13 @@ OpenQuick turns a local folder containing an \`index.html\` into a live static s
 
 You can deploy only if your runtime can store \`OPENQUICK_TOKEN\` privately and inject it as an environment variable. Do not ask a human to paste a token into chat. Do not print, log, commit, or place a token in a URL. Send it only in an Authorization header to the exact ${baseUrl} origin and do not forward it across redirects.
 
-If you do not have a private credential sink, stop after public discovery and tell the operator what is missing.
+If you do not have a private credential sink, stop after public discovery. The start API fails closed unless privateSink is true.
 
 ## First deploy
 
 1. Read [the skill](${baseUrl}/skill.md) and [auth rules](${baseUrl}/auth.md).
 2. Confirm [health](${baseUrl}/healthz) returns \`{"ok":true}\`.
-3. Ask the operator to provision \`OPENQUICK_TOKEN\` into your private environment. Self-service activation is not live yet.
+3. Start a browser-mediated connection: POST ${baseUrl}/api/v1/agent-connections with a proposed handle and privateSink true. Store the JSON privately (mode 0600). Ask a human to open approvalUrl. Poll pollUrl with the clientSecret until status is approved, then write token to OPENQUICK_TOKEN. Replay, expiry, and missing privateSink fail closed. Never put the token in a URL or chat.
 4. Obtain the CLI from the source repository:
 
    \`\`\`sh
@@ -119,7 +119,7 @@ Service version: ${version}
    The runtime must inject \`OPENQUICK_TOKEN\` privately.
 5. Treat a non-2xx response as failure. Do not blindly retry 401, 413, or 422 responses.
 6. GET the returned public URL and verify expected content.
-7. Return a receipt containing: slug, URL, release ID, file count, verification timestamp, and observed result.
+7. Return a receipt containing: slug, URL, release ID, file count, public agent handle (\`deployedBy\`), verification timestamp, and observed result. Never include the token.
 
 ## Constraints
 
@@ -141,7 +141,7 @@ OpenQuick is currently a private preview.
 
 ## Available now
 
-An operator provisions a deploy credential outside the conversation and stores it as \`OPENQUICK_TOKEN\` in the agent runtime. The CLI sends it as \`Authorization: Bearer ...\` only to ${baseUrl}.
+Agents start POST ${baseUrl}/api/v1/agent-connections with a proposed public handle and privateSink true. After a human opens the returned approvalUrl, the first private poll returns the deploy token once. Store it as OPENQUICK_TOKEN. Send it as Authorization Bearer only to ${baseUrl}. The operator admin token still works and is attributed as handle operator.
 
 ## Safety rules
 
@@ -151,9 +151,16 @@ An operator provisions a deploy credential outside the conversation and stores i
 - Stop after a 401 and ask the operator to repair the private connection.
 - Use a disposable site slug for initial testing.
 
-## Not live yet
+## Fail closed
 
-Self-service agent activation, scoped per-agent keys, expiry, and revocation UI are planned but not implemented. Until then, joining requires an operator-managed private credential. See ${baseUrl}/agent.md for the exact first-deploy flow.
+- Missing \`privateSink: true\` is rejected.
+- Unapproved polls return \`pending\` with no token.
+- Expired activations return \`410\` and never mint a token.
+- A second poll after delivery returns \`409 replay\` with no token.
+- Approval pages and URLs never include the deploy token.
+- Logs and receipts use the public handle, never the secret.
+
+See ${baseUrl}/agent.md for the exact first-deploy flow.
 `;
 }
 
@@ -171,7 +178,8 @@ export function agentCard(baseUrl: string): Record<string, unknown> {
     capabilities: {
       public: ["health", "list_sites", "read_site"],
       authenticated: ["deploy_static_site"],
-      planned: ["operator_approved_agent_activation", "scoped_credentials", "mcp"],
+      connection: ["start_agent_connection", "human_approve", "private_poll"],
+      planned: ["scoped_credentials", "revocation_ui", "mcp"],
     },
   };
 }
@@ -197,6 +205,33 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
           operationId: "getSite", summary: "Get site metadata",
           parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string", pattern: "^[a-z0-9-]+$" } }],
           responses: { "200": { description: "Site metadata" }, "404": { description: "Site not found" } },
+        },
+      },
+      "/api/v1/agent-connections": {
+        post: {
+          operationId: "startAgentConnection",
+          summary: "Start a browser-mediated agent connection",
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { type: "object", required: ["handle", "privateSink"], properties: { handle: { type: "string" }, privateSink: { type: "boolean" } } } } },
+          },
+          responses: { "201": { description: "Pending connection with approval URL and private poll secret" }, "400": { description: "Missing private sink or invalid handle" } },
+        },
+      },
+      "/api/v1/agent-connections/{id}/approve": {
+        post: {
+          operationId: "approveAgentConnection",
+          summary: "Human approval of a pending connection",
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          responses: { "200": { description: "Approved; deploy token is not returned here" }, "409": { description: "Replay" }, "410": { description: "Expired" } },
+        },
+      },
+      "/api/v1/agent-connections/{id}/poll": {
+        post: {
+          operationId: "pollAgentConnection",
+          summary: "Privately poll for a one-time deploy credential",
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          responses: { "200": { description: "Pending or one-time approved token" }, "401": { description: "Bad client secret" }, "409": { description: "Already delivered" }, "410": { description: "Expired" } },
         },
       },
       "/api/v1/sites/{slug}/deploy": {
@@ -234,7 +269,7 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
         SiteRecord: {
           type: "object",
           additionalProperties: false,
-          required: ["slug", "releaseId", "fileCount", "totalBytes", "createdAt", "updatedAt"],
+          required: ["slug", "releaseId", "fileCount", "totalBytes", "createdAt", "updatedAt", "deployedBy"],
           properties: {
             slug: { type: "string", pattern: "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$" },
             releaseId: { type: "string", minLength: 1 },
@@ -242,6 +277,7 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
             totalBytes: { type: "integer", minimum: 0 },
             createdAt: { type: "string", format: "date-time" },
             updatedAt: { type: "string", format: "date-time" },
+            deployedBy: { type: "string", minLength: 1, description: "Public agent handle. Never the deploy secret." },
           },
         },
         DeployReceipt: {

@@ -1,4 +1,5 @@
 import { serve } from "@hono/node-server";
+import { ActivationStore } from "./activation.js";
 import { createApp } from "./app.js";
 import { SiteStore } from "./store.js";
 
@@ -9,9 +10,12 @@ const adminToken = process.env.OPENQUICK_ADMIN_TOKEN ?? (process.env.NODE_ENV ==
 if (!adminToken) throw new Error("OPENQUICK_ADMIN_TOKEN is required in production");
 
 const store = new SiteStore(dataDir);
+const activations = new ActivationStore(dataDir);
 await store.initialize();
+await activations.initialize();
 const app = createApp({
   store,
+  activations,
   adminToken,
   ...(process.env.BASE_URL ? { baseUrl: process.env.BASE_URL.replace(/\/$/, "") } : {}),
 });

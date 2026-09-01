@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
+import { ActivationStore } from "../src/activation.js";
 import { createApp } from "../src/app.js";
 import { MAX_DEPLOY_BYTES, SiteStore } from "../src/store.js";
 
@@ -25,8 +26,10 @@ async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "openquick-contract-"));
   roots.push(root);
   const store = new SiteStore(root);
+  const activations = new ActivationStore(root);
   await store.initialize();
-  return createApp({ store, adminToken: "test-token", baseUrl: "https://openquick.test" });
+  await activations.initialize();
+  return createApp({ store, activations, adminToken: "test-token", baseUrl: "https://openquick.test" });
 }
 
 function responseSchemaRef(document: OpenApiDocument, status: string): string {
@@ -44,6 +47,7 @@ test("deploy response payloads satisfy the published OpenAPI contract", async ()
 
   assert.equal(document.openapi, "3.1.0");
   assert.deepEqual(Object.keys(document.components.schemas).sort(), ["DeployReceipt", "ErrorEnvelope", "SiteRecord"]);
+  assert.ok(document.paths["/api/v1/agent-connections"]);
   assert.equal(responseSchemaRef(document, "201"), "#/components/schemas/DeployReceipt");
   for (const status of ["401", "413", "422"]) {
     assert.equal(responseSchemaRef(document, status), "#/components/schemas/ErrorEnvelope");
@@ -96,6 +100,7 @@ test("deploy response payloads satisfy the published OpenAPI contract", async ()
   const receipt = await deployed.json();
   assert.ok(validateReceipt(receipt), JSON.stringify(validateReceipt.errors));
   assert.deepEqual(Object.keys((receipt as { site: JsonObject }).site).sort(), [
-    "createdAt", "fileCount", "releaseId", "slug", "totalBytes", "updatedAt",
+    "createdAt", "deployedBy", "fileCount", "releaseId", "slug", "totalBytes", "updatedAt",
   ]);
+  assert.equal((receipt as { site: { deployedBy: string } }).site.deployedBy, "operator");
 });
