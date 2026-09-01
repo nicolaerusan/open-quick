@@ -34,4 +34,5 @@ export type StoredAsset = {
   bytes: Uint8Array;
   contentType: string;
   path: string;
+  mtime: Date;
 };

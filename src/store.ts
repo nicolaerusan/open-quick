@@ -174,6 +174,7 @@ export class SiteStore {
       bytes: await readFile(target),
       contentType: mime.getType(path) ?? "application/octet-stream",
       path,
+      mtime: info.mtime,
     };
   }
 }

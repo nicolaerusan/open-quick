@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { Hono } from "hono";
 import { logger } from "hono/logger";
 import type { OpenQuickRelease } from "./release-attestation.js";
@@ -69,16 +70,76 @@ function originOf(options: AppOptions, url: string): string {
   return options.baseUrl || new URL(url).origin;
 }
 
-function assetResponse(asset: { bytes: Uint8Array; contentType: string }, cacheControl: string): Response {
+/** Path-mode headers for untrusted HTML/assets on /sites/{slug}/. Host isolation is #62. */
+export const HOSTED_CONTENT_SECURITY_HEADERS = {
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+  "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=(), browsing-topics=()",
+  "content-security-policy": "object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+} as const;
+
+function hostedNotFound(): Response {
+  return new Response("Site or asset not found", {
+    status: 404,
+    headers: {
+      "content-type": "text/plain; charset=UTF-8",
+      ...HOSTED_CONTENT_SECURITY_HEADERS,
+    },
+  });
+}
+
+function strongEtag(bytes: Uint8Array): string {
+  return `"${crypto.createHash("sha256").update(bytes).digest("hex")}"`;
+}
+
+function ifNoneMatchHits(header: string | undefined, etag: string): boolean {
+  if (!header) return false;
+  const tags = header.split(",").map((part) => part.trim()).filter(Boolean);
+  if (tags.includes("*")) return true;
+  const quoted = etag;
+  const weak = etag.startsWith("W/") ? etag : `W/${etag}`;
+  const strong = etag.startsWith("W/") ? etag.slice(2) : etag;
+  return tags.some((tag) => tag === quoted || tag === weak || tag === strong);
+}
+
+function ifModifiedSinceFresh(header: string | undefined, mtime: Date): boolean {
+  if (!header) return false;
+  const since = Date.parse(header);
+  if (Number.isNaN(since)) return false;
+  return Math.floor(mtime.getTime() / 1000) <= Math.floor(since / 1000);
+}
+
+function assetResponse(
+  asset: { bytes: Uint8Array; contentType: string; mtime: Date },
+  cacheControl: string,
+  request: { header(name: string): string | undefined },
+): Response {
   const body = asset.bytes.buffer.slice(
     asset.bytes.byteOffset,
     asset.bytes.byteOffset + asset.bytes.byteLength,
   ) as ArrayBuffer;
+  const etag = strongEtag(asset.bytes);
+  const lastModified = asset.mtime.toUTCString();
+  const validators = {
+    etag,
+    "last-modified": lastModified,
+    "cache-control": cacheControl,
+  };
+  const ifNoneMatch = request.header("if-none-match");
+  const unchanged = ifNoneMatch
+    ? ifNoneMatchHits(ifNoneMatch, etag)
+    : ifModifiedSinceFresh(request.header("if-modified-since"), asset.mtime);
+  if (unchanged) {
+    return new Response(null, {
+      status: 304,
+      headers: { ...HOSTED_CONTENT_SECURITY_HEADERS, ...validators },
+    });
+  }
   return new Response(body, {
     headers: {
       "content-type": asset.contentType,
-      "cache-control": cacheControl,
-      "x-content-type-options": "nosniff",
+      ...HOSTED_CONTENT_SECURITY_HEADERS,
+      ...validators,
     },
   });
 }
@@ -251,8 +312,8 @@ export function createApp(options: AppOptions): Hono {
     const path = new URL(c.req.url).pathname.slice(prefix.length);
     try {
       const asset = await options.store.assetAtRelease(slug, releaseId, path);
-      return assetResponse(asset, "public, max-age=31536000, immutable");
-    } catch { return c.text("Site or asset not found", 404); }
+      return assetResponse(asset, "public, max-age=31536000, immutable", c.req);
+    } catch { return hostedNotFound(); }
   });
   app.get("/sites/:slug", (c) => c.redirect(`/sites/${encodeURIComponent(c.req.param("slug"))}/`, 308));
   app.get("/sites/:slug/*", async (c) => {
@@ -260,8 +321,8 @@ export function createApp(options: AppOptions): Hono {
     const path = new URL(c.req.url).pathname.slice(prefix.length);
     try {
       const asset = await options.store.asset(c.req.param("slug"), path);
-      return assetResponse(asset, asset.path === "index.html" ? "no-cache" : "public, max-age=300");
-    } catch { return c.text("Site or asset not found", 404); }
+      return assetResponse(asset, asset.path === "index.html" ? "no-cache" : "public, max-age=300", c.req);
+    } catch { return hostedNotFound(); }
   });
   app.get("/", async (c) => {
     const origin = options.baseUrl || new URL(c.req.url).origin;
