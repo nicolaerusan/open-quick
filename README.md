@@ -94,6 +94,9 @@ npm run build
 7. After deploy, verify with:
    `node scripts/assert-production-revision.mjs --host https://<origin> --expect <sha>`
 
+Promotion contract gate (Space-main pin, build, and live OpenAPI/attestation checks):
+see [docs/PROMOTION.md](./docs/PROMOTION.md) and package script `gate:promotion`.
+
 The initial topology is intentionally a single service and volume, matching the
 constraint-driven spirit of Quick. Before using OpenQuick for untrusted public
 uploads, add per-user authentication, quotas, malware/content controls, and a
