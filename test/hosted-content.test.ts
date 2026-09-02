@@ -47,7 +47,9 @@ test("hosted HTML and nested assets send path-mode security headers and cache va
 
   const html = await app.request("/sites/headers/");
   assert.equal(html.status, 200);
-  assert.equal(await html.text(), "<h1>Headers</h1>");
+  const htmlBody = await html.text();
+  assert.match(htmlBody, /<h1>Headers<\/h1>/);
+  assert.match(htmlBody, /openquick-powered-by/);
   assert.match(html.headers.get("content-type") ?? "", /text\/html/);
   assertHostedHeaders(html);
   const etag = html.headers.get("etag");

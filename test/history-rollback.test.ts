@@ -79,7 +79,7 @@ test("rollback atomically activates a prior immutable release without copying fi
   const { app, store, root } = await fixture();
   const first = await deploy(app, "story", "<h1>First</h1>");
   const second = await deploy(app, "story", "<h1>Second</h1>");
-  assert.equal(await (await app.request("/sites/story/")).text(), "<h1>Second</h1>");
+  assert.match(await (await app.request("/sites/story/")).text(), /<h1>Second<\/h1>/);
 
   const unauthorized = await app.request("/api/v1/sites/story/rollback", {
     method: "POST",
@@ -101,9 +101,9 @@ test("rollback atomically activates a prior immutable release without copying fi
 
   const current = await app.request("/sites/story/");
   assert.equal(current.status, 200);
-  assert.equal(await current.text(), "<h1>First</h1>");
-  assert.equal(await (await app.request(first.releaseUrl.replace("https://openquick.test", ""))).text(), "<h1>First</h1>");
-  assert.equal(await (await app.request(second.releaseUrl.replace("https://openquick.test", ""))).text(), "<h1>Second</h1>");
+  assert.match(await current.text(), /<h1>First<\/h1>/);
+  assert.match(await (await app.request(first.releaseUrl.replace("https://openquick.test", ""))).text(), /<h1>First<\/h1>/);
+  assert.match(await (await app.request(second.releaseUrl.replace("https://openquick.test", ""))).text(), /<h1>Second<\/h1>/);
 
   const releaseDirs = (await readdir(join(root, "sites", "story", "releases"))).filter((name) => !name.startsWith("."));
   assert.deepEqual(new Set(releaseDirs), new Set([first.site.releaseId, second.site.releaseId]));
@@ -133,7 +133,7 @@ test("unknown and malformed release ids fail closed on rollback", async () => {
     assert.equal(response.status, 422, releaseId);
     const body = await response.json() as { error: string; code: string };
     assert.equal(body.code, "invalid_release");
-    assert.equal(await (await app.request("/sites/alpha/")).text(), "<h1>Alpha</h1>");
+    assert.match(await (await app.request("/sites/alpha/")).text(), /<h1>Alpha<\/h1>/);
     const current = await store.site("alpha");
     assert.equal(current.releaseId, alpha.site.releaseId);
   }
@@ -184,7 +184,7 @@ test("duplicate rollback is idempotent: same active release and no extra mutatio
   assert.equal(duplicate.status, 200);
   const receipt = await duplicate.json() as { site: { releaseId: string } };
   assert.equal(receipt.site.releaseId, first.site.releaseId);
-  assert.equal(await (await app.request("/sites/story/")).text(), "<h1>First</h1>");
+  assert.match(await (await app.request("/sites/story/")).text(), /<h1>First<\/h1>/);
 
   const pointerAfter = await stat(pointer);
   const auditAfter = await stat(auditFile);

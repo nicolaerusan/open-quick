@@ -114,7 +114,7 @@ test("approval delivers a one-time token that can deploy and is attributed by ha
 
   const publicRead = await app.request("/sites/from-agent/");
   assert.equal(publicRead.status, 200);
-  assert.equal(await publicRead.text(), "<h1>Agent</h1>");
+  assert.match(await publicRead.text(), /<h1>Agent<\/h1>/);
 
   const listed = await (await app.request("/api/v1/sites")).json() as { sites: Array<{ deployedBy: string }> };
   assert.equal(listed.sites[0]?.deployedBy, "cold-agent");

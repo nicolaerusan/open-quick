@@ -22,6 +22,7 @@ openquick deploy my-site
 - Typed `SiteStorage` with a filesystem adapter, immutable release folders, and an atomic `current.json` pointer. Failed uploads never swap the pointer; orphan cleanup is documented in [docs/STORAGE.md](./docs/STORAGE.md).
 - A mounted Railway volume at `/data` for durable assets.
 - Path-based URLs (`/sites/{slug}/`) until wildcard-domain routing is justified. Hosted-content security headers and cache validators on that path are documented in [docs/PATH_MODE_HOSTING.md](./docs/PATH_MODE_HOSTING.md); dedicated host isolation remains on umbrella #62.
+- Hosted HTML gets a dismissable powered-by OpenQuick badge at serve time (opt out with `<meta name="openquick-badge" content="off">`). See [docs/POWERED_BY_BADGE.md](./docs/POWERED_BY_BADGE.md).
 - One deploy token, strict path validation, and bounded upload size/count.
 
 This is deliberately narrower than Shopify's internal platform. Database, AI,

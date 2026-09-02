@@ -56,7 +56,7 @@ test("deploys and serves a static site", async () => {
 
   const page = await app.request("/sites/demo/");
   assert.equal(page.status, 200);
-  assert.equal(await page.text(), "<h1>Hello</h1>");
+  assert.match(await page.text(), /<h1>Hello<\/h1>/);
   assert.match(page.headers.get("content-type") ?? "", /text\/html/);
 });
 
@@ -73,7 +73,7 @@ test("rejects unsafe paths without replacing the current release", async () => {
     body: JSON.stringify({ files: [{ path: "../escape.txt", content: b64("nope") }] }),
   });
   assert.equal(bad.status, 422);
-  assert.equal(await (await app.request("/sites/safe/")).text(), "safe");
+  assert.match(await (await app.request("/sites/safe/")).text(), /safe/);
 });
 
 test("publishes an agent-first discovery surface", async () => {
@@ -136,13 +136,13 @@ test("keeps prior release permalinks after a later deploy", async () => {
 
   const current = await app.request("/sites/story/");
   assert.equal(current.status, 200);
-  assert.equal(await current.text(), "<h1>Second</h1>");
+  assert.match(await current.text(), /<h1>Second<\/h1>/);
   assert.equal(current.headers.get("cache-control"), "no-cache");
   assert.equal(current.headers.get("x-content-type-options"), "nosniff");
 
   const previous = await app.request(`/sites/story/releases/${first.site.releaseId}/`);
   assert.equal(previous.status, 200);
-  assert.equal(await previous.text(), "<h1>First</h1>");
+  assert.match(await previous.text(), /<h1>First<\/h1>/);
   assert.equal(previous.headers.get("cache-control"), "public, max-age=31536000, immutable");
   assert.equal(previous.headers.get("x-content-type-options"), "nosniff");
   assert.match(previous.headers.get("content-type") ?? "", /text\/html/);

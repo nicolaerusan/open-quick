@@ -8,6 +8,7 @@ import { evaluateWriteGate, isConsoleWritePath, isWriteMethod, localRedirectPath
 import type { SiteStorage } from "./storage.js";
 import { MAX_DEPLOY_BYTES } from "./store.js";
 import { agentCard, agentMarkdown, authMarkdown, llmsTxt, openApiDocument, skillMarkdown } from "./agent-docs.js";
+import { maybeInjectHostedHtml } from "./powered-by.js";
 
 type AppOptions = {
   store: SiteStorage;
@@ -130,12 +131,20 @@ function assetResponse(
   asset: { bytes: Uint8Array; contentType: string; mtime: Date },
   cacheControl: string,
   request: { header(name: string): string | undefined },
+  origin: string,
 ): Response {
-  const body = asset.bytes.buffer.slice(
-    asset.bytes.byteOffset,
-    asset.bytes.byteOffset + asset.bytes.byteLength,
+  const bytes = maybeInjectHostedHtml(
+    asset.bytes,
+    asset.contentType,
+    origin,
+    request.header("x-openquick-badge"),
+  );
+  const injected = bytes !== asset.bytes;
+  const body = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
   ) as ArrayBuffer;
-  const etag = strongEtag(asset.bytes);
+  const etag = strongEtag(bytes);
   const lastModified = asset.mtime.toUTCString();
   const validators = {
     etag,
@@ -145,7 +154,7 @@ function assetResponse(
   const ifNoneMatch = request.header("if-none-match");
   const unchanged = ifNoneMatch
     ? ifNoneMatchHits(ifNoneMatch, etag)
-    : ifModifiedSinceFresh(request.header("if-modified-since"), asset.mtime);
+    : !injected && ifModifiedSinceFresh(request.header("if-modified-since"), asset.mtime);
   if (unchanged) {
     return new Response(null, {
       status: 304,
@@ -391,7 +400,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const path = new URL(c.req.url).pathname.slice(prefix.length);
     try {
       const asset = await options.store.assetAtRelease(slug, releaseId, path);
-      return assetResponse(asset, "public, max-age=31536000, immutable", c.req);
+      return assetResponse(asset, "public, max-age=31536000, immutable", c.req, originOf(options, c.req.url));
     } catch { return hostedNotFound(); }
   });
   app.get("/sites/:slug", (c) => c.redirect(localRedirectPath(`/sites/${encodeURIComponent(c.req.param("slug"))}/`), 308));
@@ -400,7 +409,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const path = new URL(c.req.url).pathname.slice(prefix.length);
     try {
       const asset = await options.store.asset(c.req.param("slug"), path);
-      return assetResponse(asset, asset.path === "index.html" ? "no-cache" : "public, max-age=300", c.req);
+      return assetResponse(asset, asset.path === "index.html" ? "no-cache" : "public, max-age=300", c.req, originOf(options, c.req.url));
     } catch { return hostedNotFound(); }
   });
   app.get("/", async (c) => {

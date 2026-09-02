@@ -87,7 +87,7 @@ test("valid bearer deploy is attributed to the public handle only", async () => 
   assert.equal("token" in receipt, false);
   const page = await app.request("/sites/attributed/");
   assert.equal(page.status, 200);
-  assert.equal(await page.text(), "<h1>Hello</h1>");
+  assert.match(await page.text(), /<h1>Hello<\/h1>/);
 });
 
 test("production refuses writes when auth bypass or insecure cookies are enabled", async () => {

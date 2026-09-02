@@ -17,3 +17,5 @@ Responses for those hosted HTML and nested asset paths send:
 This is **path-mode hardening only**. It does not put untrusted HTML on a
 separate origin. Wildcard host isolation remains on umbrella task
 [#62](https://commons.diy/s/open-quick/t/62).
+
+Live and permalink HTML also receive the powered-by badge at serve time. See [POWERED_BY_BADGE.md](./POWERED_BY_BADGE.md).
