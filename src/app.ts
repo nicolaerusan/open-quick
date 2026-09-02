@@ -5,11 +5,12 @@ import type { OpenQuickRelease } from "./release-attestation.js";
 import type { DeployErrorCode, DeployErrorResponse, DeployPayload, RollbackPayload, SiteRecord } from "./types.js";
 import { ActivationStore } from "./activation.js";
 import { evaluateWriteGate, isConsoleWritePath, isWriteMethod, localRedirectPath, publicActor, type PublicActor } from "./auth-gate.js";
-import { MAX_DEPLOY_BYTES, SiteStore } from "./store.js";
+import type { SiteStorage } from "./storage.js";
+import { MAX_DEPLOY_BYTES } from "./store.js";
 import { agentCard, agentMarkdown, authMarkdown, llmsTxt, openApiDocument, skillMarkdown } from "./agent-docs.js";
 
 type AppOptions = {
-  store: SiteStore;
+  store: SiteStorage;
   activations: ActivationStore;
   adminToken: string;
   production?: boolean;
@@ -28,7 +29,7 @@ function escapeHtml(value: string): string {
     .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
 }
 
-function landingPage(sites: Awaited<ReturnType<SiteStore["list"]>>, baseUrl: string): string {
+function landingPage(sites: Awaited<ReturnType<SiteStorage["list"]>>, baseUrl: string): string {
   const cards = sites.length === 0
     ? `<article class="empty"><span>NO DEPLOYS YET</span><h3>Your first tiny internet starts here.</h3><p>Run the deploy command from any folder containing an index.html.</p></article>`
     : sites.map((site) => `<a class="site" href="/sites/${encodeURIComponent(site.slug)}/">

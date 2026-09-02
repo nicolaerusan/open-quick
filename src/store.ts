@@ -3,6 +3,14 @@ import { dirname, extname, join, posix, resolve, sep } from "node:path";
 import crypto from "node:crypto";
 import mime from "mime";
 import type { AuditEvent, DeployFile, SiteRecord, StoredAsset } from "./types.js";
+import type { OrphanCleanupResult, SiteStorage } from "./storage.js";
+import {
+  STORAGE_PREFIX,
+  isPointerStagingName,
+  isUploadStagingName,
+  pointerStagingName,
+  uploadStagingName,
+} from "./storage.js";
 
 export const MAX_FILE_COUNT = 500;
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -80,7 +88,7 @@ function prepareFiles(files: DeployFile[]): { files: PreparedFile[]; totalBytes:
   return { files: prepared, totalBytes };
 }
 
-export class SiteStore {
+export class SiteStore implements SiteStorage {
   readonly root: string;
 
   constructor(root: string) {
@@ -88,7 +96,8 @@ export class SiteStore {
   }
 
   async initialize(): Promise<void> {
-    await mkdir(join(this.root, "sites"), { recursive: true });
+    await mkdir(join(this.root, STORAGE_PREFIX.sites), { recursive: true });
+    await this.cleanupOrphans();
   }
 
   async deploy(slug: string, files: DeployFile[], deployedBy: string): Promise<SiteRecord> {
@@ -99,7 +108,7 @@ export class SiteStore {
     const releaseId = `${Date.now().toString(36)}-${crypto.randomBytes(5).toString("hex")}`;
     const siteRoot = join(this.root, "sites", slug);
     const releasesRoot = join(siteRoot, "releases");
-    const temporary = join(releasesRoot, `.upload-${releaseId}`);
+    const temporary = join(releasesRoot, uploadStagingName(releaseId));
     const releaseRoot = join(releasesRoot, releaseId);
     const record: SiteRecord = {
       slug,
@@ -132,13 +141,14 @@ export class SiteStore {
       return record;
     } catch (error) {
       await rm(temporary, { recursive: true, force: true });
+      await rm(join(siteRoot, pointerStagingName(releaseId)), { force: true });
       throw error;
     }
   }
 
   async site(slug: string): Promise<SiteRecord> {
     if (!SITE_SLUG.test(slug)) throw new Error("Invalid site slug");
-    return JSON.parse(await readFile(join(this.root, "sites", slug, "current.json"), "utf8")) as SiteRecord;
+    return JSON.parse(await readFile(join(this.root, STORAGE_PREFIX.sites, slug, STORAGE_PREFIX.activePointer), "utf8")) as SiteRecord;
   }
 
   async list(): Promise<SiteRecord[]> {
@@ -218,10 +228,37 @@ export class SiteStore {
     return this.readReleaseAsset(slug, releaseId, requested);
   }
 
-  private async activateRelease(siteRoot: string, record: SiteRecord): Promise<void> {
-    const pointer = join(siteRoot, `.current-${record.releaseId}.json`);
+
+  async cleanupOrphans(): Promise<OrphanCleanupResult> {
+    const removed: string[] = [];
+    const sitesRoot = join(this.root, STORAGE_PREFIX.sites);
+    const entries = await readdir(sitesRoot, { withFileTypes: true }).catch(() => []);
+    for (const siteEntry of entries) {
+      if (!siteEntry.isDirectory()) continue;
+      const slug = siteEntry.name;
+      const siteRoot = join(sitesRoot, slug);
+      const siteFiles = await readdir(siteRoot, { withFileTypes: true }).catch(() => []);
+      for (const file of siteFiles) {
+        if (file.isFile() && isPointerStagingName(file.name)) {
+          await rm(join(siteRoot, file.name), { force: true });
+          removed.push(`${STORAGE_PREFIX.sites}/${slug}/${file.name}`);
+        }
+      }
+      const releasesRoot = join(siteRoot, STORAGE_PREFIX.releases);
+      const releaseEntries = await readdir(releasesRoot, { withFileTypes: true }).catch(() => []);
+      for (const release of releaseEntries) {
+        if (!isUploadStagingName(release.name)) continue;
+        await rm(join(releasesRoot, release.name), { recursive: true, force: true });
+        removed.push(`${STORAGE_PREFIX.sites}/${slug}/${STORAGE_PREFIX.releases}/${release.name}`);
+      }
+    }
+    return { removed };
+  }
+
+  protected async activateRelease(siteRoot: string, record: SiteRecord): Promise<void> {
+    const pointer = join(siteRoot, pointerStagingName(record.releaseId));
     await writeFile(pointer, JSON.stringify(record, null, 2), { flag: "wx" });
-    await rename(pointer, join(siteRoot, "current.json"));
+    await rename(pointer, join(siteRoot, STORAGE_PREFIX.activePointer));
   }
 
   private async appendAudit(event: AuditEvent): Promise<void> {
@@ -271,4 +308,8 @@ export class SiteStore {
       mtime: info.mtime,
     };
   }
+}
+
+export function createFilesystemStorage(root: string): SiteStorage {
+  return new SiteStore(root);
 }

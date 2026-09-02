@@ -19,7 +19,7 @@ openquick deploy my-site
 
 - One Node.js 22 + TypeScript service built with Hono.
 - One TypeScript CLI shipped from the same package.
-- Immutable release folders and an atomic `current.json` pointer.
+- Typed `SiteStorage` with a filesystem adapter, immutable release folders, and an atomic `current.json` pointer. Failed uploads never swap the pointer; orphan cleanup is documented in [docs/STORAGE.md](./docs/STORAGE.md).
 - A mounted Railway volume at `/data` for durable assets.
 - Path-based URLs (`/sites/{slug}/`) until wildcard-domain routing is justified. Hosted-content security headers and cache validators on that path are documented in [docs/PATH_MODE_HOSTING.md](./docs/PATH_MODE_HOSTING.md); dedicated host isolation remains on umbrella #62.
 - One deploy token, strict path validation, and bounded upload size/count.

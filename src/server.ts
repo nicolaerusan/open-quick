@@ -2,11 +2,11 @@ import { serve } from "@hono/node-server";
 import { ActivationStore } from "./activation.js";
 import { createApp } from "./app.js";
 import { loadBootConfig } from "./boot.js";
-import { SiteStore } from "./store.js";
+import { createFilesystemStorage } from "./store.js";
 
 const boot = loadBootConfig(process.env);
 
-const store = new SiteStore(boot.dataDir);
+const store = createFilesystemStorage(boot.dataDir);
 const activations = new ActivationStore(boot.dataDir);
 await store.initialize();
 await activations.initialize();
