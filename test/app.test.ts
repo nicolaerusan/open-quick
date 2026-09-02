@@ -108,6 +108,8 @@ test("publishes an agent-first discovery surface", async () => {
   const openapi = await (await app.request("/openapi.json")).json() as { openapi: string; paths: Record<string, unknown> };
   assert.equal(openapi.openapi, "3.1.0");
   assert.ok(openapi.paths["/api/v1/sites/{slug}/deploy"]);
+  assert.ok(openapi.paths["/api/v1/sites/{slug}/releases"]);
+  assert.ok(openapi.paths["/api/v1/sites/{slug}/rollback"]);
   assert.ok(openapi.paths["/sites/{slug}/releases/{releaseId}/"]);
   assert.ok(openapi.paths["/.well-known/openquick-release.json"]);
 

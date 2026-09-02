@@ -1,8 +1,8 @@
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, join, posix, resolve, sep } from "node:path";
 import crypto from "node:crypto";
 import mime from "mime";
-import type { DeployFile, SiteRecord, StoredAsset } from "./types.js";
+import type { AuditEvent, DeployFile, SiteRecord, StoredAsset } from "./types.js";
 
 export const MAX_FILE_COUNT = 500;
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -10,6 +10,16 @@ export const MAX_DEPLOY_BYTES = 25 * 1024 * 1024;
 export const SITE_SLUG = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 type PreparedFile = { path: string; bytes: Buffer };
+
+export type SiteStoreErrorCode = "not_found" | "invalid_release";
+
+export function storeError(code: SiteStoreErrorCode, message: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+
+function errorCode(error: unknown): string {
+  return error && typeof error === "object" && "code" in error ? String((error as { code: string }).code) : "";
+}
 
 /** Reject traversal, temps, and anything that is not a single release folder name. */
 export function isValidReleaseId(releaseId: string): boolean {
@@ -111,9 +121,14 @@ export class SiteStore {
       await writeFile(join(temporary, "_openquick-release.json"), JSON.stringify(record, null, 2), { flag: "wx" });
       await rename(temporary, releaseRoot);
       await mkdir(siteRoot, { recursive: true });
-      const pointer = join(siteRoot, `.current-${releaseId}.json`);
-      await writeFile(pointer, JSON.stringify(record, null, 2), { flag: "wx" });
-      await rename(pointer, join(siteRoot, "current.json"));
+      await this.activateRelease(siteRoot, record);
+      await this.appendAudit({
+        type: "deploy",
+        slug,
+        releaseId,
+        at: record.updatedAt,
+        actor: deployedBy,
+      }).catch(() => undefined);
       return record;
     } catch (error) {
       await rm(temporary, { recursive: true, force: true });
@@ -127,13 +142,69 @@ export class SiteStore {
   }
 
   async list(): Promise<SiteRecord[]> {
-    const { readdir } = await import("node:fs/promises");
     const entries = await readdir(join(this.root, "sites"), { withFileTypes: true });
     const records = await Promise.all(entries.filter((entry) => entry.isDirectory()).map((entry) =>
       this.site(entry.name).catch(() => null),
     ));
     return records.filter((record): record is SiteRecord => record !== null)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  /** Metadata-only history; does not copy or read release asset bytes. Newest first. */
+  async history(slug: string): Promise<SiteRecord[]> {
+    if (!SITE_SLUG.test(slug)) throw storeError("not_found", "Invalid site slug");
+    await this.site(slug).catch(() => {
+      throw storeError("not_found", "Site not found");
+    });
+    const releasesRoot = join(this.root, "sites", slug, "releases");
+    const entries = await readdir(releasesRoot, { withFileTypes: true }).catch(() => []);
+    const records: SiteRecord[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !isValidReleaseId(entry.name)) continue;
+      const record = await this.readReleaseRecord(slug, entry.name).catch(() => null);
+      if (record) records.push(record);
+    }
+    return records.sort((a, b) => {
+      const byTime = b.updatedAt.localeCompare(a.updatedAt);
+      return byTime !== 0 ? byTime : b.releaseId.localeCompare(a.releaseId);
+    });
+  }
+
+  /**
+   * Atomically point current.json at an existing immutable release directory.
+   * Repeating the same target is a no-op: same pointer, no extra audit row.
+   */
+  async rollback(slug: string, releaseId: string, actor: string): Promise<{ site: SiteRecord; mutated: boolean }> {
+    if (!SITE_SLUG.test(slug)) throw storeError("not_found", "Invalid site slug");
+    if (!isValidReleaseId(releaseId)) throw storeError("invalid_release", "Invalid release id");
+    const current = await this.site(slug).catch(() => {
+      throw storeError("not_found", "Site not found");
+    });
+    const target = await this.readReleaseRecord(slug, releaseId).catch((error) => {
+      if (errorCode(error) === "invalid_release") throw error;
+      throw storeError("invalid_release", "Release not found");
+    });
+    if (current.releaseId === target.releaseId) {
+      return { site: current, mutated: false };
+    }
+    const siteRoot = join(this.root, "sites", slug);
+    await this.activateRelease(siteRoot, target);
+    await this.appendAudit({
+      type: "rollback",
+      slug,
+      fromReleaseId: current.releaseId,
+      toReleaseId: target.releaseId,
+      at: new Date().toISOString(),
+      actor,
+    }).catch(() => undefined);
+    return { site: target, mutated: true };
+  }
+
+  async audit(slug: string): Promise<AuditEvent[]> {
+    if (!SITE_SLUG.test(slug)) throw storeError("not_found", "Invalid site slug");
+    const raw = await readFile(join(this.root, "sites", slug, "audit.jsonl"), "utf8").catch(() => "");
+    if (!raw.trim()) return [];
+    return raw.split("\n").filter((line) => line.length > 0).map((line) => JSON.parse(line) as AuditEvent);
   }
 
   async asset(slug: string, requested: string): Promise<StoredAsset> {
@@ -145,6 +216,29 @@ export class SiteStore {
     if (!SITE_SLUG.test(slug)) throw new Error("Invalid site slug");
     if (!isValidReleaseId(releaseId)) throw new Error("Invalid release id");
     return this.readReleaseAsset(slug, releaseId, requested);
+  }
+
+  private async activateRelease(siteRoot: string, record: SiteRecord): Promise<void> {
+    const pointer = join(siteRoot, `.current-${record.releaseId}.json`);
+    await writeFile(pointer, JSON.stringify(record, null, 2), { flag: "wx" });
+    await rename(pointer, join(siteRoot, "current.json"));
+  }
+
+  private async appendAudit(event: AuditEvent): Promise<void> {
+    const dir = join(this.root, "sites", event.slug);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "audit.jsonl"), `${JSON.stringify(event)}\n`, { flag: "a" });
+  }
+
+  private async readReleaseRecord(slug: string, releaseId: string): Promise<SiteRecord> {
+    if (!isValidReleaseId(releaseId)) throw storeError("invalid_release", "Invalid release id");
+    const releasesRoot = join(this.root, "sites", slug, "releases");
+    const releaseRoot = contained(releasesRoot, releaseId);
+    const metaRaw = await readFile(join(releaseRoot, "_openquick-release.json"), "utf8").catch(() => null);
+    if (!metaRaw) throw storeError("invalid_release", "Release not found");
+    const record = JSON.parse(metaRaw) as SiteRecord;
+    if (record.slug !== slug || record.releaseId !== releaseId) throw storeError("invalid_release", "Release not found");
+    return record;
   }
 
   private async readReleaseAsset(slug: string, releaseId: string, requested: string): Promise<StoredAsset> {

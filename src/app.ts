@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { Hono } from "hono";
 import { logger } from "hono/logger";
 import type { OpenQuickRelease } from "./release-attestation.js";
-import type { DeployErrorCode, DeployErrorResponse, DeployPayload } from "./types.js";
+import type { DeployErrorCode, DeployErrorResponse, DeployPayload, RollbackPayload, SiteRecord } from "./types.js";
 import { ActivationStore } from "./activation.js";
 import { MAX_DEPLOY_BYTES, SiteStore } from "./store.js";
 import { agentCard, agentMarkdown, authMarkdown, llmsTxt, openApiDocument, skillMarkdown } from "./agent-docs.js";
@@ -68,6 +68,18 @@ function joinPage(baseUrl: string): string {
 
 function originOf(options: AppOptions, url: string): string {
   return options.baseUrl || new URL(url).origin;
+}
+
+function publicSiteUrls(origin: string, site: SiteRecord): { url: string; releaseUrl: string } {
+  const slug = encodeURIComponent(site.slug);
+  return {
+    url: `${origin}/sites/${slug}/`,
+    releaseUrl: `${origin}/sites/${slug}/releases/${encodeURIComponent(site.releaseId)}/`,
+  };
+}
+
+function storeErrorCode(error: unknown): string {
+  return error && typeof error === "object" && "code" in error ? String((error as { code: string }).code) : "";
 }
 
 /** Path-mode headers for untrusted HTML/assets on /sites/{slug}/. Host isolation is #62. */
@@ -212,6 +224,25 @@ export function createApp(options: AppOptions): Hono {
     try { return c.json({ site: await options.store.site(c.req.param("slug")) }); }
     catch { return c.json({ error: "Site not found" }, 404); }
   });
+  app.get("/api/v1/sites/:slug/releases", async (c) => {
+    try {
+      const slug = c.req.param("slug");
+      const site = await options.store.site(slug);
+      const releases = await options.store.history(slug);
+      const origin = originOf(options, c.req.url);
+      const urls = publicSiteUrls(origin, site);
+      return c.json({
+        site,
+        url: urls.url,
+        releaseUrl: urls.releaseUrl,
+        fileCount: site.fileCount,
+        totalBytes: site.totalBytes,
+        releases,
+      });
+    } catch {
+      return c.json({ error: "Site not found" }, 404);
+    }
+  });
   app.post("/api/v1/agent-connections", async (c) => {
     const origin = originOf(options, c.req.url);
     const body = await c.req.json<{ handle?: string; privateSink?: boolean }>().catch(() => ({} as { handle?: string; privateSink?: boolean }));
@@ -291,13 +322,31 @@ export function createApp(options: AppOptions): Hono {
       const payload = await c.req.json<DeployPayload>();
       const site = await options.store.deploy(c.req.param("slug"), payload.files, identity.handle);
       const origin = originOf(options, c.req.url);
-      const url = `${origin}/sites/${encodeURIComponent(site.slug)}/`;
-      const releaseUrl = `${origin}/sites/${encodeURIComponent(site.slug)}/releases/${encodeURIComponent(site.releaseId)}/`;
-      return c.json({ site, url, releaseUrl }, 201);
+      return c.json({ site, ...publicSiteUrls(origin, site) }, 201);
     } catch {
       // Keep validation responses stable and safe. Store and parser errors can
       // contain user paths or provider details that must not cross the API.
       return c.json(deployError("invalid_deployment", "Deployment validation failed"), 422);
+    }
+  });
+  app.post("/api/v1/sites/:slug/rollback", async (c) => {
+    const identity = await authenticateDeploy(options, c.req.header("authorization"));
+    if (!identity) {
+      return c.json(deployError("unauthorized", "A valid deploy token is required"), 401);
+    }
+    const payload = await c.req.json<RollbackPayload>().catch(() => ({ releaseId: "" } as RollbackPayload));
+    const releaseId = typeof payload.releaseId === "string" ? payload.releaseId : "";
+    try {
+      const result = await options.store.rollback(c.req.param("slug"), releaseId, identity.handle);
+      const origin = originOf(options, c.req.url);
+      return c.json({ site: result.site, ...publicSiteUrls(origin, result.site) });
+    } catch (error) {
+      const code = storeErrorCode(error);
+      if (code === "not_found") return c.json({ error: "Site not found" }, 404);
+      if (code === "invalid_release") {
+        return c.json(deployError("invalid_release", "Unknown or invalid release"), 422);
+      }
+      return c.json(deployError("invalid_release", "Unknown or invalid release"), 422);
     }
   });
   app.get("/sites/:slug/releases/:releaseId", (c) => {

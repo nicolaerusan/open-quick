@@ -59,7 +59,9 @@ test("deploy response payloads satisfy the published OpenAPI contract", async ()
     "ErrorEnvelope",
     "HealthResponse",
     "OpenQuickRelease",
+    "RollbackRequest",
     "SiteDetailResponse",
+    "SiteHistoryResponse",
     "SiteListResponse",
     "SiteNotFoundError",
     "SiteRecord",
@@ -137,6 +139,11 @@ test("public-read response payloads satisfy the published OpenAPI contract", asy
   assert.equal(pathResponseSchemaRef(document, "/api/v1/sites", "get", "200"), "#/components/schemas/SiteListResponse");
   assert.equal(pathResponseSchemaRef(document, "/api/v1/sites/{slug}", "get", "200"), "#/components/schemas/SiteDetailResponse");
   assert.equal(pathResponseSchemaRef(document, "/api/v1/sites/{slug}", "get", "404"), "#/components/schemas/SiteNotFoundError");
+  assert.equal(pathResponseSchemaRef(document, "/api/v1/sites/{slug}/releases", "get", "200"), "#/components/schemas/SiteHistoryResponse");
+  assert.equal(pathResponseSchemaRef(document, "/api/v1/sites/{slug}/releases", "get", "404"), "#/components/schemas/SiteNotFoundError");
+  assert.equal(pathResponseSchemaRef(document, "/api/v1/sites/{slug}/rollback", "post", "200"), "#/components/schemas/DeployReceipt");
+  assert.equal(pathResponseSchemaRef(document, "/api/v1/sites/{slug}/rollback", "post", "401"), "#/components/schemas/ErrorEnvelope");
+  assert.equal(pathResponseSchemaRef(document, "/api/v1/sites/{slug}/rollback", "post", "422"), "#/components/schemas/ErrorEnvelope");
 
   const schemaId = "https://openquick.test/openapi-public-read.json";
   const ajv = new Ajv2020({ allErrors: true, strict: false });
@@ -185,6 +192,20 @@ test("public-read response payloads satisfy the published OpenAPI contract", asy
   assert.ok(validateDetail(detailBody), JSON.stringify(validateDetail.errors));
   assert.equal(Object.keys(detailBody as object).sort().join(","), "site");
   assert.notEqual(Object.keys(listed).sort().join(","), Object.keys(detailBody as object).sort().join(","));
+
+  const validateHistory = ajv.compile({ $ref: `${schemaId}#/components/schemas/SiteHistoryResponse` });
+  const history = await app.request("/api/v1/sites/public-read/releases");
+  assert.equal(history.status, 200);
+  const historyBody = await history.json();
+  assert.ok(validateHistory(historyBody), JSON.stringify(validateHistory.errors));
+  assert.deepEqual(Object.keys(historyBody as object).sort(), [
+    "fileCount", "releaseUrl", "releases", "site", "totalBytes", "url",
+  ]);
+
+  const missingHistory = await app.request("/api/v1/sites/missing-site/releases");
+  assert.equal(missingHistory.status, 404);
+  const missingHistoryBody = await missingHistory.json();
+  assert.ok(validateNotFound(missingHistoryBody), JSON.stringify(validateNotFound.errors));
 });
 
 

@@ -40,16 +40,17 @@ OpenQuick turns a local folder containing an \`index.html\` into a live static s
 
 - Host: ${baseUrl}
 - Status: private preview
-- Public access: capability discovery, health, production revision attestation, typed site listing/detail reads, and hosted sites
+- Public access: capability discovery, health, production revision attestation, typed site listing/detail/history reads, and hosted sites
 - Write access: operator token or a browser-approved agent deploy credential
 - Limits: static files only; maximum decoded release size is 25 MB
-- Deploy behavior: one atomic release replaces the selected site slug
+- Deploy behavior: one atomic release replaces the selected site slug; rollback reactivates a prior immutable release without copying bytes
 
 ## Site URLs
 
 - Mutable current site: \`${baseUrl}/sites/{slug}/\` and nested assets under that prefix. Redeploys update this URL in place.
 - Immutable release permalink: \`${baseUrl}/sites/{slug}/releases/{releaseId}/\` and nested assets under that prefix. This always serves the exact bytes of that release.
 - Unknown, malformed, cross-site, or traversal release IDs return 404 and never fall back to the current release.
+- Ordered release history (metadata only): \`GET ${baseUrl}/api/v1/sites/{slug}/releases\`
 
 ## Decide whether you can join
 
@@ -137,12 +138,14 @@ Service version: ${version}
 
 - OpenQuick hosts static assets; it does not run server-side code.
 - A deploy replaces the current release at the mutable \`/sites/{slug}/\` URL. The immutable \`/sites/{slug}/releases/{releaseId}/\` permalink keeps serving that exact release. Confirm ownership before overwriting.
+- \`GET /api/v1/sites/{slug}/releases\` returns the current URL/release, file/byte totals, and newest-first history without copying release bytes.
+- Authenticated \`POST /api/v1/sites/{slug}/rollback\` with \`{ "releaseId" }\` atomically activates a prior immutable release. Unknown or malformed IDs fail closed. Repeating the same rollback is idempotent.
 - Never send the bearer token to another host or through a redirect.
 - Do not claim success until the public URL has been checked.
 
 ## API
 
-Read ${baseUrl}/openapi.json for request and response schemas. Public discovery and reads (health, production revision attestation at \`/.well-known/openquick-release.json\`, site list, site detail, site-detail 404) need no token and expose typed application/json response schemas; authenticated deploys use bearer authentication with typed DeployReceipt/ErrorEnvelope responses.
+Read ${baseUrl}/openapi.json for request and response schemas. Public discovery and reads (health, production revision attestation at \`/.well-known/openquick-release.json\`, site list, site detail, site history, site-detail 404) need no token and expose typed application/json response schemas; authenticated deploys and rollbacks use bearer authentication with typed DeployReceipt/ErrorEnvelope responses.
 `;
 }
 
@@ -189,8 +192,8 @@ export function agentCard(baseUrl: string): Record<string, unknown> {
     openapi: `${baseUrl}/openapi.json`,
     release: `${baseUrl}/.well-known/openquick-release.json`,
     capabilities: {
-      public: ["health", "list_sites", "read_site", "read_production_revision"],
-      authenticated: ["deploy_static_site"],
+      public: ["health", "list_sites", "read_site", "read_site_history", "read_production_revision"],
+      authenticated: ["deploy_static_site", "rollback_site"],
       connection: ["start_agent_connection", "human_approve", "private_poll"],
       planned: ["scoped_credentials", "revocation_ui", "mcp"],
     },
@@ -320,6 +323,55 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
           },
         },
       },
+      "/api/v1/sites/{slug}/releases": {
+        get: {
+          operationId: "getSiteReleaseHistory",
+          summary: "Get current site pointer and ordered release history",
+          description: "Public metadata-only history. Does not copy or return release asset bytes. Releases are newest-first by deploy timestamp.",
+          parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string", pattern: "^[a-z0-9-]+$" } }],
+          responses: {
+            "200": {
+              description: "Current URL/release, file/byte totals, and ordered history",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/SiteHistoryResponse" } } },
+            },
+            "404": {
+              description: "Site not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/SiteNotFoundError" } } },
+            },
+          },
+        },
+      },
+      "/api/v1/sites/{slug}/rollback": {
+        post: {
+          operationId: "rollbackSite",
+          summary: "Atomically activate a prior immutable release",
+          description: "Guarded rollback: points current.json at an existing release directory without copying files. Unknown or malformed release IDs fail closed. Repeating the same target is idempotent.",
+          security: [{ bearerAuth: [] }],
+          parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string", pattern: "^[a-z0-9-]+$" } }],
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { $ref: "#/components/schemas/RollbackRequest" } } },
+          },
+          responses: {
+            "200": {
+              description: "Active release after rollback (or unchanged when already active)",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/DeployReceipt" } } },
+            },
+            "401": {
+              description: "Missing or invalid token",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } },
+            },
+            "404": {
+              description: "Site not found",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/SiteNotFoundError" } } },
+            },
+            "422": {
+              description: "Unknown or malformed release id",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } },
+            },
+          },
+        },
+      },
       "/api/v1/sites/{slug}/deploy": {
         post: {
           operationId: "deploySite", summary: "Atomically deploy a static site", security: [{ bearerAuth: [] }],
@@ -415,6 +467,27 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
             site: { $ref: "#/components/schemas/SiteRecord" },
           },
         },
+        SiteHistoryResponse: {
+          type: "object",
+          additionalProperties: false,
+          required: ["site", "url", "releaseUrl", "fileCount", "totalBytes", "releases"],
+          properties: {
+            site: { $ref: "#/components/schemas/SiteRecord" },
+            url: { type: "string", format: "uri", description: "Mutable current-site URL: {origin}/sites/{slug}/" },
+            releaseUrl: { type: "string", format: "uri", description: "Immutable canonical URL for the active release" },
+            fileCount: { type: "integer", minimum: 1 },
+            totalBytes: { type: "integer", minimum: 0 },
+            releases: { type: "array", items: { $ref: "#/components/schemas/SiteRecord" }, description: "Newest-first metadata for each immutable release. No asset bytes." },
+          },
+        },
+        RollbackRequest: {
+          type: "object",
+          additionalProperties: false,
+          required: ["releaseId"],
+          properties: {
+            releaseId: { type: "string", minLength: 1 },
+          },
+        },
         SiteNotFoundError: {
           type: "object",
           additionalProperties: false,
@@ -441,7 +514,7 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
             error: { type: "string", minLength: 1 },
             code: {
               type: "string",
-              enum: ["unauthorized", "payload_too_large", "invalid_deployment"],
+              enum: ["unauthorized", "payload_too_large", "invalid_deployment", "invalid_release"],
             },
           },
         },
