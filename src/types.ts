@@ -11,7 +11,7 @@ export type RollbackPayload = {
   releaseId: string;
 };
 
-export type DeployErrorCode = "unauthorized" | "payload_too_large" | "invalid_deployment" | "invalid_release";
+export type DeployErrorCode = "unauthorized" | "insecure_mode" | "payload_too_large" | "invalid_deployment" | "invalid_release";
 
 export type DeployErrorResponse = {
   error: string;

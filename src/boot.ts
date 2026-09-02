@@ -1,9 +1,13 @@
+import { envFlagEnabled } from "./auth-gate.js";
 import { resolveReleaseAttestation, type OpenQuickRelease } from "./release-attestation.js";
 
 export type BootConfig = {
   port: number;
   dataDir: string;
   adminToken: string;
+  production: boolean;
+  authBypass: boolean;
+  insecureCookies: boolean;
   baseUrl?: string;
   attestation?: OpenQuickRelease;
 };
@@ -19,6 +23,9 @@ export function loadBootConfig(env: NodeJS.Dict<string>): BootConfig {
     port: Number.isFinite(port) ? port : 3000,
     dataDir,
     adminToken,
+    production,
+    authBypass: envFlagEnabled(env.OPENQUICK_AUTH_BYPASS),
+    insecureCookies: envFlagEnabled(env.OPENQUICK_INSECURE_COOKIES),
     ...(env.BASE_URL ? { baseUrl: env.BASE_URL.replace(/\/$/, "") } : {}),
     ...(attestation ? { attestation } : {}),
   };

@@ -14,6 +14,9 @@ const app = createApp({
   store,
   activations,
   adminToken: boot.adminToken,
+  production: boot.production,
+  authBypass: boot.authBypass,
+  insecureCookies: boot.insecureCookies,
   ...(boot.baseUrl ? { baseUrl: boot.baseUrl } : {}),
   ...(boot.attestation ? { attestation: boot.attestation } : {}),
 });

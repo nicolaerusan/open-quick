@@ -4,6 +4,7 @@ import { logger } from "hono/logger";
 import type { OpenQuickRelease } from "./release-attestation.js";
 import type { DeployErrorCode, DeployErrorResponse, DeployPayload, RollbackPayload, SiteRecord } from "./types.js";
 import { ActivationStore } from "./activation.js";
+import { evaluateWriteGate, isConsoleWritePath, isWriteMethod, localRedirectPath, publicActor, type PublicActor } from "./auth-gate.js";
 import { MAX_DEPLOY_BYTES, SiteStore } from "./store.js";
 import { agentCard, agentMarkdown, authMarkdown, llmsTxt, openApiDocument, skillMarkdown } from "./agent-docs.js";
 
@@ -11,6 +12,9 @@ type AppOptions = {
   store: SiteStore;
   activations: ActivationStore;
   adminToken: string;
+  production?: boolean;
+  authBypass?: boolean;
+  insecureCookies?: boolean;
   baseUrl?: string;
   attestation?: OpenQuickRelease;
 };
@@ -174,17 +178,44 @@ document.getElementById("approve").addEventListener("submit", async (event) => {
 </script></main></body></html>`;
 }
 
-async function authenticateDeploy(options: AppOptions, authorization: string | undefined): Promise<{ handle: string } | null> {
+async function resolveBearerIdentity(options: AppOptions, authorization: string | undefined): Promise<PublicActor | null> {
   const prefix = "Bearer ";
   if (!authorization?.startsWith(prefix)) return null;
   const token = authorization.slice(prefix.length);
-  if (options.adminToken && token === options.adminToken) return { handle: "operator" };
-  return options.activations.authenticate(token);
+  if (!token || token.includes("\n") || token.includes("\r")) return null;
+  if (options.adminToken && token === options.adminToken) return publicActor("operator");
+  const identity = await options.activations.authenticate(token);
+  return identity ? publicActor(identity.handle) : null;
 }
 
-export function createApp(options: AppOptions): Hono {
-  const app = new Hono();
+function writeGateOptions(options: AppOptions) {
+  return {
+    production: options.production === true,
+    authBypass: options.authBypass === true,
+    insecureCookies: options.insecureCookies === true,
+  };
+}
+
+async function gateConsoleWrite(options: AppOptions, authorization: string | undefined): Promise<
+  { ok: true; actor: PublicActor } | { ok: false; status: 401 | 403; body: DeployErrorResponse }
+> {
+  const identity = await resolveBearerIdentity(options, authorization);
+  return evaluateWriteGate(writeGateOptions(options), identity);
+}
+
+type AppEnv = { Variables: { deployActor: PublicActor } };
+
+export function createApp(options: AppOptions): Hono<AppEnv> {
+  const app = new Hono<AppEnv>();
   app.use(logger());
+  app.use(async (c, next) => {
+    const pathname = new URL(c.req.url).pathname;
+    if (!isConsoleWritePath(pathname) || !isWriteMethod(c.req.method)) return next();
+    const gated = await gateConsoleWrite(options, c.req.header("authorization"));
+    if (!gated.ok) return c.json(gated.body, gated.status);
+    c.set("deployActor", gated.actor);
+    return next();
+  });
 
   app.get("/healthz", (c) => c.json({ ok: true }));
   app.get("/.well-known/openquick-release.json", (c) => {
@@ -271,6 +302,10 @@ export function createApp(options: AppOptions): Hono {
   });
   app.get("/connect/:id", async (c) => {
     const origin = originOf(options, c.req.url);
+    const url = new URL(c.req.url);
+    for (const key of ["redirect", "next", "return", "return_to", "state", "goto", "callback"]) {
+      url.searchParams.delete(key);
+    }
     const activation = await options.activations.publicById(c.req.param("id"), origin);
     if (!activation) return c.text("Activation not found", 404);
     if (activation.status === "expired") return c.text("This activation expired", 410);
@@ -310,17 +345,14 @@ export function createApp(options: AppOptions): Hono {
     }
   });
   app.post("/api/v1/sites/:slug/deploy", async (c) => {
-    const identity = await authenticateDeploy(options, c.req.header("authorization"));
-    if (!identity) {
-      return c.json(deployError("unauthorized", "A valid deploy token is required"), 401);
-    }
+    const actor = c.get("deployActor") as PublicActor;
     const length = Number(c.req.header("content-length") ?? "0");
     if (Number.isFinite(length) && length > Math.ceil(MAX_DEPLOY_BYTES * 1.45)) {
       return c.json(deployError("payload_too_large", "Deploy request is too large"), 413);
     }
     try {
       const payload = await c.req.json<DeployPayload>();
-      const site = await options.store.deploy(c.req.param("slug"), payload.files, identity.handle);
+      const site = await options.store.deploy(c.req.param("slug"), payload.files, actor.handle);
       const origin = originOf(options, c.req.url);
       return c.json({ site, ...publicSiteUrls(origin, site) }, 201);
     } catch {
@@ -330,14 +362,11 @@ export function createApp(options: AppOptions): Hono {
     }
   });
   app.post("/api/v1/sites/:slug/rollback", async (c) => {
-    const identity = await authenticateDeploy(options, c.req.header("authorization"));
-    if (!identity) {
-      return c.json(deployError("unauthorized", "A valid deploy token is required"), 401);
-    }
+    const actor = c.get("deployActor") as PublicActor;
     const payload = await c.req.json<RollbackPayload>().catch(() => ({ releaseId: "" } as RollbackPayload));
     const releaseId = typeof payload.releaseId === "string" ? payload.releaseId : "";
     try {
-      const result = await options.store.rollback(c.req.param("slug"), releaseId, identity.handle);
+      const result = await options.store.rollback(c.req.param("slug"), releaseId, actor.handle);
       const origin = originOf(options, c.req.url);
       return c.json({ site: result.site, ...publicSiteUrls(origin, result.site) });
     } catch (error) {
@@ -352,7 +381,7 @@ export function createApp(options: AppOptions): Hono {
   app.get("/sites/:slug/releases/:releaseId", (c) => {
     const slug = encodeURIComponent(c.req.param("slug"));
     const releaseId = encodeURIComponent(c.req.param("releaseId"));
-    return c.redirect(`/sites/${slug}/releases/${releaseId}/`, 308);
+    return c.redirect(localRedirectPath(`/sites/${slug}/releases/${releaseId}/`), 308);
   });
   app.get("/sites/:slug/releases/:releaseId/*", async (c) => {
     const slug = c.req.param("slug");
@@ -364,7 +393,7 @@ export function createApp(options: AppOptions): Hono {
       return assetResponse(asset, "public, max-age=31536000, immutable", c.req);
     } catch { return hostedNotFound(); }
   });
-  app.get("/sites/:slug", (c) => c.redirect(`/sites/${encodeURIComponent(c.req.param("slug"))}/`, 308));
+  app.get("/sites/:slug", (c) => c.redirect(localRedirectPath(`/sites/${encodeURIComponent(c.req.param("slug"))}/`), 308));
   app.get("/sites/:slug/*", async (c) => {
     const prefix = `/sites/${c.req.param("slug")}/`;
     const path = new URL(c.req.url).pathname.slice(prefix.length);

@@ -169,6 +169,10 @@ Agents start POST ${baseUrl}/api/v1/agent-connections with a proposed public han
 ## Fail closed
 
 - Missing \`privateSink: true\` is rejected.
+- Unauthenticated writes (\`POST /api/v1/sites\`, deploy, rollback, and other console write methods) return \`401\` with code \`unauthorized\`. They never redirect.
+- Invalid or denied bearer tokens return \`401\`. Redirect \`state\`/\`next\`/\`redirect\` query values are ignored and cannot become an open redirect.
+- Successful writes are attributed as the public handle only (\`deployedBy\`). Responses, receipts, and hosted JavaScript never include email, sessions, or provider tokens.
+- If \`OPENQUICK_AUTH_BYPASS\` or \`OPENQUICK_INSECURE_COOKIES\` is enabled in production (\`NODE_ENV=production\`), writes return documented \`403\` with code \`insecure_mode\` even when a bearer token is present. Public reads still work.
 - Unapproved polls return \`pending\` with no token.
 - Expired activations return \`410\` and never mint a token.
 - A second poll after delivery returns \`409 replay\` with no token.
@@ -247,6 +251,26 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
             "200": {
               description: "Site list",
               content: { "application/json": { schema: { $ref: "#/components/schemas/SiteListResponse" } } },
+            },
+          },
+        },
+        post: {
+          operationId: "writeSitesCollection",
+          summary: "Unauthenticated collection writes fail closed",
+          description: "Console/collection writes require the existing agent-connection or operator bearer. Missing or invalid credentials return 401 and never redirect. Production returns documented 403 when a local auth bypass or insecure cookie mode is enabled.",
+          security: [{ bearerAuth: [] }],
+          responses: {
+            "401": {
+              description: "Missing or invalid token",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } },
+            },
+            "403": {
+              description: "Production refuses writes while a local auth bypass or insecure cookie mode is enabled",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } },
+            },
+            "404": {
+              description: "Authenticated collection POST has no create resource; use /api/v1/sites/{slug}/deploy",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/SiteNotFoundError" } } },
             },
           },
         },
@@ -361,6 +385,10 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
               description: "Missing or invalid token",
               content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } },
             },
+            "403": {
+              description: "Production refuses writes while a local auth bypass or insecure cookie mode is enabled",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } },
+            },
             "404": {
               description: "Site not found",
               content: { "application/json": { schema: { $ref: "#/components/schemas/SiteNotFoundError" } } },
@@ -387,6 +415,10 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
             },
             "401": {
               description: "Missing or invalid token",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } },
+            },
+            "403": {
+              description: "Production refuses writes while a local auth bypass or insecure cookie mode is enabled",
               content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } },
             },
             "413": {
@@ -514,7 +546,7 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
             error: { type: "string", minLength: 1 },
             code: {
               type: "string",
-              enum: ["unauthorized", "payload_too_large", "invalid_deployment", "invalid_release"],
+              enum: ["unauthorized", "insecure_mode", "payload_too_large", "invalid_deployment", "invalid_release"],
             },
           },
         },

@@ -71,7 +71,7 @@ test("deploy response payloads satisfy the published OpenAPI contract", async ()
   const receiptSchema = document.components.schemas.DeployReceipt as { required?: string[]; properties?: Record<string, unknown> };
   assert.deepEqual(receiptSchema.required, ["site", "url", "releaseUrl"]);
   assert.ok(receiptSchema.properties?.releaseUrl);
-  for (const status of ["401", "413", "422"]) {
+  for (const status of ["401", "403", "413", "422"]) {
     assert.equal(responseSchemaRef(document, status), "#/components/schemas/ErrorEnvelope");
   }
 
@@ -137,12 +137,15 @@ test("public-read response payloads satisfy the published OpenAPI contract", asy
   assert.equal(pathResponseSchemaRef(document, "/healthz", "get", "200"), "#/components/schemas/HealthResponse");
   assert.equal(pathResponseSchemaRef(document, "/.well-known/openquick-release.json", "get", "200"), "#/components/schemas/OpenQuickRelease");
   assert.equal(pathResponseSchemaRef(document, "/api/v1/sites", "get", "200"), "#/components/schemas/SiteListResponse");
+  assert.equal(pathResponseSchemaRef(document, "/api/v1/sites", "post", "401"), "#/components/schemas/ErrorEnvelope");
+  assert.equal(pathResponseSchemaRef(document, "/api/v1/sites", "post", "403"), "#/components/schemas/ErrorEnvelope");
   assert.equal(pathResponseSchemaRef(document, "/api/v1/sites/{slug}", "get", "200"), "#/components/schemas/SiteDetailResponse");
   assert.equal(pathResponseSchemaRef(document, "/api/v1/sites/{slug}", "get", "404"), "#/components/schemas/SiteNotFoundError");
   assert.equal(pathResponseSchemaRef(document, "/api/v1/sites/{slug}/releases", "get", "200"), "#/components/schemas/SiteHistoryResponse");
   assert.equal(pathResponseSchemaRef(document, "/api/v1/sites/{slug}/releases", "get", "404"), "#/components/schemas/SiteNotFoundError");
   assert.equal(pathResponseSchemaRef(document, "/api/v1/sites/{slug}/rollback", "post", "200"), "#/components/schemas/DeployReceipt");
   assert.equal(pathResponseSchemaRef(document, "/api/v1/sites/{slug}/rollback", "post", "401"), "#/components/schemas/ErrorEnvelope");
+  assert.equal(pathResponseSchemaRef(document, "/api/v1/sites/{slug}/rollback", "post", "403"), "#/components/schemas/ErrorEnvelope");
   assert.equal(pathResponseSchemaRef(document, "/api/v1/sites/{slug}/rollback", "post", "422"), "#/components/schemas/ErrorEnvelope");
 
   const schemaId = "https://openquick.test/openapi-public-read.json";
