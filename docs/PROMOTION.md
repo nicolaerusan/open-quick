@@ -62,3 +62,35 @@ vars for that pin, then re-run the gate (`--live-only` with
 `--require-attestation` once attestation is live). Trigger: failed gate,
 bad health, or operator judgment. Task #90 continues as content-probe signal
 only.
+
+## Promotion receipt
+
+Privacy-safe receipt emitter complementary to `gate:promotion` (#127). Schema id:
+`openquick-promotion-receipt/v1`. Package script name: `receipt:promotion`.
+
+    npm run receipt:promotion -- --pin <40-char-lowercase-sha>
+
+This emitter does **not** call the Railway API and does not accept or print
+Railway/OpenQuick credentials. The Railway operator harness is task **#106**.
+Task **#90** remains a hosted content probe only.
+
+Modes:
+
+- `handoff` (default) — operator steps that compose `gate:promotion` plus
+  `fillIn` fields for deployment id, timestamps, and gate results. No secrets.
+- `promoted` — requires `--deployment-id` and `--deployed-at` after the operator
+  deploy. Optional env `OPENQUICK_DEPLOYMENT_ID` / `OPENQUICK_BUILT_AT` may fill
+  those fields when they are not credential-shaped.
+
+Useful flags: `--host`, `--gate-exit 0|1|2`, `--build-status`, `--test-status`,
+`--verification-status`, `--out <path>`, `--pretty`.
+
+Exit codes: `0` ok, `1` failure (including credential-shaped input or a forbidden
+env value that would leak), `2` usage.
+
+Compose with the gate:
+
+    npm run gate:promotion -- --pin <sha> --build-only
+    # operator deploys the pin in Railway (credentials stay off Commons)
+    npm run gate:promotion -- --live-only --pin <sha> --host https://open-quick-production.up.railway.app --require-attestation
+    npm run receipt:promotion -- --mode promoted --pin <sha> --deployment-id <opaque-id> --deployed-at <RFC3339 UTC> --gate-exit 0

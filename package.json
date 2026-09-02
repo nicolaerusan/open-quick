@@ -16,7 +16,8 @@
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test --import tsx test/**/*.test.ts",
-    "gate:promotion": "node scripts/promotion-contract-gate.mjs"
+    "gate:promotion": "node scripts/promotion-contract-gate.mjs",
+    "receipt:promotion": "node scripts/promotion-receipt.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.2",
