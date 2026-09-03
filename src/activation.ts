@@ -27,6 +27,8 @@ export type ActivationPublic = {
   expiresAt: string;
 };
 
+export type ActivationStart = ActivationPublic & { clientSecret: string; approvalCode: string };
+
 type ActivationRecord = {
   id: string;
   handle: string;
@@ -35,6 +37,8 @@ type ActivationRecord = {
   expiresAt: string;
   clientSecretHash: string;
   pendingDeployTokenHash?: string;
+  approvalCodeHash: string;
+  approvalAttempts?: number;
   deployTokenHash?: string;
   createdAt?: string;
   lastUsedAt?: string;
@@ -67,15 +71,18 @@ export class ActivationStore {
     origin: string;
     scope?: CredentialScope;
     now?: number;
-  }): Promise<ActivationPublic & { clientSecret: string }> {
+  }): Promise<ActivationStart> {
     if (!input.privateSink) throw Object.assign(new Error("A private credential sink is required"), { code: "no_private_sink" as const });
     if (!AGENT_HANDLE.test(input.handle)) throw Object.assign(new Error("Handle must be lowercase letters, numbers, or hyphens"), { code: "invalid_handle" as const });
     if (input.scope !== undefined && input.scope !== null && !SLUG_PREFIX.test(input.scope)) {
       throw Object.assign(new Error("Scope must be a valid site slug prefix"), { code: "invalid_scope" as const });
     }
     const now = input.now ?? Date.now();
+    const existing = (await this.credentialRecords()).find((record) => record.handle === input.handle && !record.revokedAt);
+    if (existing) throw Object.assign(new Error("That handle is already connected"), { code: "handle_taken" as const });
     const id = crypto.randomBytes(16).toString("hex");
     const clientSecret = `ocs_${crypto.randomBytes(24).toString("base64url")}`;
+    const approvalCode = crypto.randomInt(100000, 1000000).toString();
     const deployToken = `oqt_${clientSecret.slice("ocs_".length)}`;
     const record: ActivationRecord = {
       id,
@@ -85,15 +92,22 @@ export class ActivationStore {
       expiresAt: new Date(now + ACTIVATION_TTL_MS).toISOString(),
       clientSecretHash: hashSecret(clientSecret),
       pendingDeployTokenHash: hashSecret(deployToken),
+      approvalCodeHash: hashSecret(approvalCode),
+      approvalAttempts: 0,
     };
     await this.write(record);
-    return { ...this.publicView(record, input.origin), clientSecret };
+    return { ...this.publicView(record, input.origin), clientSecret, approvalCode };
   }
 
-  async approve(id: string, origin: string, now = Date.now()): Promise<ActivationPublic> {
+  async approve(id: string, origin: string, approvalCode: string, now = Date.now()): Promise<ActivationPublic> {
     const record = await this.load(id);
     if (!record || this.isExpired(record, now)) throw Object.assign(new Error("Activation is expired or unknown"), { code: "expired" as const });
     if (record.status !== "pending") throw Object.assign(new Error("Activation is no longer pending"), { code: "replay" as const });
+    if ((record.approvalAttempts ?? 0) >= 5 || !/^[0-9]{6}$/.test(approvalCode) || !timingSafeEqualHex(record.approvalCodeHash, hashSecret(approvalCode))) {
+      record.approvalAttempts = (record.approvalAttempts ?? 0) + 1;
+      await this.write(record);
+      throw Object.assign(new Error("Invalid approval code"), { code: "invalid_code" as const });
+    }
     record.status = "approved";
     if (!record.pendingDeployTokenHash) throw Object.assign(new Error("Activation cannot mint a credential"), { code: "expired" as const });
     record.deployTokenHash = record.pendingDeployTokenHash;

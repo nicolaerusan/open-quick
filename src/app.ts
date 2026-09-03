@@ -175,13 +175,13 @@ function connectApprovePage(handle: string, id: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Approve OpenQuick agent</title>
 <style>body{margin:0;background:#0d0d0c;color:#f5f2e9;font-family:Inter,system-ui,sans-serif}main{max-width:640px;margin:auto;padding:48px 24px}h1{letter-spacing:-.05em}p{color:#aaa79f;line-height:1.55}button{background:#c9ff38;color:#111;border:0;padding:14px 18px;font:800 13px ui-monospace,monospace;cursor:pointer}#status{margin-top:18px;font:700 13px ui-monospace,monospace}</style>
 </head><body><main><p>OPENQUICK / AGENT CONNECTION</p><h1>Approve ${safeHandle}?</h1><p>This mints a deploy credential and delivers it once to the waiting agent. The token is never shown on this page or in the URL.</p>
-<form id="approve"><button type="submit">Approve connection</button></form><p id="status"></p>
+<form id="approve"><label>Requester code <input id="code" inputmode="numeric" pattern="[0-9]{6}" required></label><button type="submit">Approve connection</button></form><p id="status"></p>
 <script>
 document.getElementById("approve").addEventListener("submit", async (event) => {
   event.preventDefault();
   const status = document.getElementById("status");
   status.textContent = "Approving…";
-  const response = await fetch("/api/v1/agent-connections/${id}/approve", { method: "POST" });
+  const response = await fetch("/api/v1/agent-connections/${id}/approve", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approvalCode: document.getElementById("code").value }) });
   const body = await response.json();
   status.textContent = response.ok ? "Approved. The agent can now poll privately." : (body.error || "Approval failed");
 });
@@ -295,12 +295,13 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       const started = await options.activations.start({ handle: body.handle ?? "", privateSink: body.privateSink === true, origin, scope: body.scope ?? null });
       return c.json({
         id: started.id, handle: started.handle, status: started.status, scope: started.scope,
-        approvalUrl: started.approvalUrl, pollUrl: started.pollUrl, expiresAt: started.expiresAt, clientSecret: started.clientSecret,
+        approvalUrl: started.approvalUrl, pollUrl: started.pollUrl, expiresAt: started.expiresAt, clientSecret: started.clientSecret, approvalCode: started.approvalCode,
       }, 201);
     } catch (error) {
       const code = error && typeof error === "object" && "code" in error ? String((error as { code: string }).code) : "";
       if (code === "no_private_sink") return c.json({ error: "A private credential sink is required", code: "no_private_sink" }, 400);
       if (code === "invalid_scope") return c.json({ error: "Invalid site slug-prefix scope", code: "invalid_scope" }, 400);
+      if (code === "handle_taken") return c.json({ error: "That handle is already connected", code: "handle_taken" }, 409);
       return c.json({ error: "Invalid agent handle", code: "invalid_handle" }, 400);
     }
   });
@@ -331,13 +332,15 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   });
   app.post("/api/v1/agent-connections/:id/approve", async (c) => {
     const origin = originOf(options, c.req.url);
+    const body = await c.req.json<{ approvalCode?: string }>().catch(() => ({} as { approvalCode?: string }));
     try {
-      const approved = await options.activations.approve(c.req.param("id"), origin);
+      const approved = await options.activations.approve(c.req.param("id"), origin, body.approvalCode ?? "");
       return c.json({ id: approved.id, handle: approved.handle, status: approved.status, expiresAt: approved.expiresAt });
     } catch (error) {
       const code = error && typeof error === "object" && "code" in error ? String((error as { code: string }).code) : "";
       if (code === "expired") return c.json({ error: "Activation expired", code: "expired" }, 410);
       if (code === "replay") return c.json({ error: "Activation is no longer pending", code: "replay" }, 409);
+      if (code === "invalid_code") return c.json({ error: "Invalid approval code", code: "invalid_code" }, 401);
       return c.json({ error: "Activation not found", code: "not_found" }, 404);
     }
   });

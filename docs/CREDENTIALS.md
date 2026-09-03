@@ -6,7 +6,7 @@ A human approval mints one OpenQuick deploy credential for the proposed agent ha
 
 The deploy token is delivered exactly once by the authenticated private poll. After delivery, the server retains only its SHA-256 hash. Clients should sink the value into their private secret manager and inject it as `OPENQUICK_TOKEN`; never print, log, commit, put it in a URL, or paste it into chat.
 
-Each credential has an independent random ID and is bound to one handle. Starting and approving another connection for the same handle creates an additional credential; it does not invalidate existing credentials. This permits rotation without downtime: mint and verify the replacement, switch clients, then revoke the old ID.
+Each credential has an independent random ID and is bound to one handle. A handle is first-come-first-served: while any credential is active, another connection for that handle is rejected. Revoke the old credential before starting a replacement.
 
 ## Scope
 

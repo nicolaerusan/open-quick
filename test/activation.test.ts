@@ -67,7 +67,7 @@ test("approval delivers a one-time token that can deploy and is attributed by ha
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ handle: "cold-agent", privateSink: true }),
-  })).json() as { id: string; clientSecret: string };
+  })).json() as { id: string; clientSecret: string; approvalCode: string };
 
   const page = await app.request(`/connect/${started.id}`);
   assert.equal(page.status, 200);
@@ -75,7 +75,7 @@ test("approval delivers a one-time token that can deploy and is attributed by ha
   assert.match(html, /Approve cold-agent/);
   assert.doesNotMatch(html, /oqt_/);
 
-  const approved = await app.request(`/api/v1/agent-connections/${started.id}/approve`, { method: "POST" });
+  const approved = await app.request(`/api/v1/agent-connections/${started.id}/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approvalCode: started.approvalCode }) });
   assert.equal(approved.status, 200);
   const approvedBody = await approved.json() as { token?: string; handle: string };
   assert.equal(approvedBody.handle, "cold-agent");
@@ -128,7 +128,7 @@ test("expired activations fail closed", async () => {
   const polled = await activations.poll(started.id, started.clientSecret, later);
   assert.equal(polled.status, "expired");
   assert.equal(polled.token, undefined);
-  await assert.rejects(() => activations.approve(started.id, origin, later), /expired/i);
+  await assert.rejects(() => activations.approve(started.id, origin, started.approvalCode, later), /expired/i);
 });
 
 test("approve replay fails closed", async () => {
@@ -137,9 +137,9 @@ test("approve replay fails closed", async () => {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ handle: "once-agent", privateSink: true }),
-  })).json() as { id: string };
-  assert.equal((await app.request(`/api/v1/agent-connections/${started.id}/approve`, { method: "POST" })).status, 200);
-  const second = await app.request(`/api/v1/agent-connections/${started.id}/approve`, { method: "POST" });
+  })).json() as { id: string; approvalCode: string };
+  assert.equal((await app.request(`/api/v1/agent-connections/${started.id}/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approvalCode: started.approvalCode }) })).status, 200);
+  const second = await app.request(`/api/v1/agent-connections/${started.id}/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approvalCode: started.approvalCode }) });
   assert.equal(second.status, 409);
   assert.equal(((await second.json()) as { code: string }).code, "replay");
 });
@@ -150,7 +150,7 @@ test("wrong poll secret fails closed", async () => {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ handle: "secret-agent", privateSink: true }),
-  })).json() as { id: string };
+  })).json() as { id: string; approvalCode: string };
   const response = await app.request(`/api/v1/agent-connections/${started.id}/poll`, {
     method: "POST",
     headers: { "content-type": "application/json" },

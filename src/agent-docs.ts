@@ -54,20 +54,20 @@ OpenQuick turns a local folder containing an \`index.html\` into a live static s
 
 ## Decide whether you can join
 
-You can deploy only if your runtime can store \`OPENQUICK_TOKEN\` privately and inject it as an environment variable. Do not ask a human to paste a token into chat. Do not print, log, commit, or place a token in a URL. Send it only in an Authorization header to the exact ${baseUrl} origin and do not forward it across redirects.
+You can deploy only if your runtime can store \`OPENQUICK_TOKEN\` or \`OPENQUICK_TOKEN_FILE\` privately. Do not ask a human to paste a token into chat. Do not print, log, commit, or place a token in a URL. Send it only in an Authorization header to the exact ${baseUrl} origin and do not forward it across redirects.
 
 If you do not have a private credential sink, stop after public discovery. The start API fails closed unless privateSink is true.
 
 ## Long-lived credential lifecycle
 
-Approval creates a handle-bound credential with no expiry; the connection expiresAt applies only while approval is pending. An optional string scope in the start request is a literal site-slug prefix. Store the one-time private poll result as OPENQUICK_TOKEN. To rotate without downtime, approve a second connection for the same handle, switch clients, then revoke the old credential; minting does not invalidate earlier credentials. An active credential may list its handle-only metadata with GET ${baseUrl}/api/v1/agent-connections and revoke any credential for the same handle with DELETE ${baseUrl}/api/v1/agent-connections/{id}. Revocation is immediate. Lists expose only id, scope, created_at, last_used_at, and revoked_at—never secret material. Scoped out-of-prefix writes return typed 403 scope_denied.
+Approval requires the requester-provided six-digit code (the URL alone cannot approve) and creates a handle-bound credential with no expiry; the connection expiresAt applies only while approval is pending. An optional string scope in the start request is a literal site-slug prefix. Store the one-time private poll result as OPENQUICK_TOKEN or via OPENQUICK_TOKEN_FILE. Handles are first-come-first-served: revoke before reconnecting the same handle; an active credential may list its handle-only metadata with GET ${baseUrl}/api/v1/agent-connections and revoke any credential for the same handle with DELETE ${baseUrl}/api/v1/agent-connections/{id}. Revocation is immediate. Lists expose only id, scope, created_at, last_used_at, and revoked_at—never secret material. Scoped out-of-prefix writes return typed 403 scope_denied.
 
 
 ## First deploy
 
 1. Read [the skill](${baseUrl}/skill.md) and [auth rules](${baseUrl}/auth.md).
 2. Confirm [health](${baseUrl}/healthz) returns \`{"ok":true}\`.
-3. Start a browser-mediated connection: POST ${baseUrl}/api/v1/agent-connections with a proposed handle and privateSink true. Store the JSON privately (mode 0600). Ask a human to open approvalUrl. Poll pollUrl with the clientSecret until status is approved, then write token to OPENQUICK_TOKEN. Replay, expiry, and missing privateSink fail closed. Never put the token in a URL or chat.
+3. Start a browser-mediated connection: POST ${baseUrl}/api/v1/agent-connections with a proposed handle and privateSink true. Store the JSON privately (mode 0600). Ask a human to open approvalUrl and enter the six-digit approvalCode shown in your private start response. Poll pollUrl with the clientSecret until status is approved, then write token to OPENQUICK_TOKEN or OPENQUICK_TOKEN_FILE. Replay, expiry, and missing privateSink fail closed. Never put the token in a URL or chat.
 4. Obtain the CLI from the source repository:
 
    \`\`\`sh
@@ -81,7 +81,7 @@ Approval creates a handle-bound credential with no expiry; the connection expire
 
    \`\`\`sh
    export OPENQUICK_HOST=${baseUrl}
-   # OPENQUICK_TOKEN must already be injected privately. Never echo it.
+   # OPENQUICK_TOKEN or OPENQUICK_TOKEN_FILE must already be injected privately. Never echo it.
    node dist/cli.js deploy ./path/to/folder --site my-site
    \`\`\`
 
@@ -121,7 +121,7 @@ Service version: ${version}
 - The decoded release must be 25 MB or smaller.
 - Site slugs use lowercase letters, numbers, and hyphens.
 - \`OPENQUICK_HOST\` must be \`${baseUrl}\` for production.
-- \`OPENQUICK_TOKEN\` must come from a private credential store. Never request or reveal it in chat.
+- \`OPENQUICK_TOKEN\` or \`OPENQUICK_TOKEN_FILE\` must come from a private credential store. Never request or reveal it in chat.
 
 ## Workflow
 
@@ -161,9 +161,9 @@ OpenQuick is currently a private preview.
 
 ## Available now
 
-Agents start POST ${baseUrl}/api/v1/agent-connections with a proposed public handle, privateSink true, and optional literal site-slug-prefix scope. After a human opens approvalUrl, the first private poll returns the deploy token once. Store it as OPENQUICK_TOKEN. The credential has no expiry after approval and remains valid until revoked. Send it as Authorization Bearer only to ${baseUrl}. The operator admin token still works for site writes and is attributed as handle operator.
+Agents start POST ${baseUrl}/api/v1/agent-connections with a proposed public handle, privateSink true, and optional literal site-slug-prefix scope. After a human opens approvalUrl, the requester must provide the six-digit approvalCode shown in the start response; the first private poll returns the deploy token once. Store it as OPENQUICK_TOKEN. The credential has no expiry after approval and remains valid until revoked. Send it as Authorization Bearer only to ${baseUrl}. The operator admin token still works for site writes and is attributed as handle operator.
 
-An active agent credential may GET ${baseUrl}/api/v1/agent-connections to list lifecycle metadata for its own handle and DELETE ${baseUrl}/api/v1/agent-connections/{id} to revoke a credential belonging to the same handle. Mint a replacement before revoking the old credential for rotation without downtime.
+An active agent credential may GET ${baseUrl}/api/v1/agent-connections to list lifecycle metadata for its own handle and DELETE ${baseUrl}/api/v1/agent-connections/{id} to revoke a credential belonging to the same handle. Handles are first-come-first-served: a second active connection for the same handle is rejected; revoke before reconnecting.
 
 ## Safety rules
 

@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { DeployFile } from "./types.js";
 
 type Config = { site?: string; host?: string };
-const ignored = new Set([".git", "node_modules", ".DS_Store", "openquick.json"]);
+const ignored = new Set([".git", "node_modules", ".DS_Store", "openquick.json", ".gitignore"]);
+export class CliError extends Error { constructor(public readonly code: "token_argument" | "secret_files", message: string) { super(message); } }
+function secretShaped(path: string): boolean { const name = basename(path); return /^\.env(?:$|\.)/i.test(name) || /\.(?:pem|key)$/i.test(name) || /^id_[^/]+$/i.test(name) || /(?:credentials|secret|private)[-_].*/i.test(name); }
+function ignoredByGitignore(path: string, patterns: string[]): boolean { let result = false; for (const raw of patterns) { const pattern = raw.trim(); if (!pattern || pattern.startsWith("#")) continue; const negated = pattern.startsWith("!"); const value = (negated ? pattern.slice(1) : pattern).replace(/^\//, "").replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, "."); if (new RegExp(`^(?:${value})(?:${pattern.endsWith("/") ? ".*" : ""})$`).test(path) || new RegExp(`(?:^|/)${value}$`).test(path)) result = !negated; } return result; }
 
 function option(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -16,21 +20,27 @@ async function config(directory: string): Promise<Config> {
   catch { return {}; }
 }
 
-export async function collectFiles(directory: string): Promise<DeployFile[]> {
+export async function collectFiles(directory: string, options: { allowSecrets?: boolean } = {}): Promise<DeployFile[]> {
   const root = resolve(directory);
+  const gitignore = (await readFile(join(root, ".gitignore"), "utf8").catch(() => "")).split("\n");
+  const secretFiles: string[] = [];
   const files: DeployFile[] = [];
   async function visit(current: string): Promise<void> {
     for (const entry of await readdir(current, { withFileTypes: true })) {
       if (ignored.has(entry.name)) continue;
       const absolute = join(current, entry.name);
+      const path = relative(root, absolute).replaceAll("\\", "/");
+      if (ignoredByGitignore(path, gitignore)) continue;
       if (entry.isDirectory()) await visit(absolute);
+      else if (entry.isFile() && !options.allowSecrets && secretShaped(path)) secretFiles.push(path);
       else if (entry.isFile()) files.push({
-        path: relative(root, absolute).replaceAll("\\", "/"),
+        path,
         content: (await readFile(absolute)).toString("base64"),
       });
     }
   }
   await visit(root);
+  if (secretFiles.length) throw new CliError("secret_files", `Refusing secret-shaped files: ${secretFiles.join(", ")}. Use --allow-secrets only if intentional.`);
   return files;
 }
 
@@ -50,15 +60,16 @@ async function init(directory: string): Promise<void> {
 }
 
 async function deploy(directory: string, args: string[]): Promise<void> {
+  if (args.includes("--token") || args.some((arg) => /^oqt_[A-Za-z0-9_-]+$/.test(arg))) throw new CliError("token_argument", "Tokens must be supplied through OPENQUICK_TOKEN or a private token file; command-line tokens are rejected.");
   const root = resolve(directory);
   const local = await config(root);
   const site = option(args, "--site") ?? local.site;
   const host = (option(args, "--host") ?? process.env.OPENQUICK_HOST ?? local.host)?.replace(/\/$/, "");
-  const token = option(args, "--token") ?? process.env.OPENQUICK_TOKEN;
+  const token = process.env.OPENQUICK_TOKEN ?? (process.env.OPENQUICK_TOKEN_FILE ? (await readFile(process.env.OPENQUICK_TOKEN_FILE, "utf8")).trim() : undefined);
   if (!site) throw new Error("Choose a site with --site or openquick.json");
   if (!host) throw new Error("Set OPENQUICK_HOST or pass --host");
-  if (!token) throw new Error("Set OPENQUICK_TOKEN or pass --token");
-  const files = await collectFiles(root);
+  if (!token) throw new Error("Set OPENQUICK_TOKEN");
+  const files = await collectFiles(root, { allowSecrets: args.includes("--allow-secrets") });
   const response = await fetch(`${host}/api/v1/sites/${encodeURIComponent(site)}/deploy`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -72,16 +83,20 @@ async function deploy(directory: string, args: string[]): Promise<void> {
   if (body.site?.releaseId) console.log(`Release ${body.site.releaseId}`);
 }
 
-const args = process.argv.slice(2);
-const command = args[0];
-try {
-  if (command === "init") await init(args[1] ?? ".");
-  else if (command === "deploy") await deploy(args[1] && !args[1].startsWith("--") ? args[1] : ".", args.slice(1));
-  else {
-    console.log(`OpenQuick\n\n  openquick init [directory]\n  openquick deploy [directory] --site <slug> [--host <url>]\n\nEnvironment: OPENQUICK_HOST, OPENQUICK_TOKEN`);
-    process.exitCode = command ? 1 : 0;
+async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  const command = args[0];
+  try {
+    if (command === "init") await init(args[1] ?? ".");
+    else if (command === "deploy") await deploy(args[1] && !args[1].startsWith("--") ? args[1] : ".", args.slice(1));
+    else {
+      console.log(`OpenQuick\n\n  openquick init [directory]\n  openquick deploy [directory] --site <slug> [--host <url>] [--allow-secrets]\n\nEnvironment: OPENQUICK_HOST, OPENQUICK_TOKEN or OPENQUICK_TOKEN_FILE (tokens are never accepted as arguments)`);
+      process.exitCode = command ? 1 : 0;
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : "OpenQuick command failed");
+    process.exitCode = 1;
   }
-} catch (error) {
-  console.error(error instanceof Error ? error.message : "OpenQuick command failed");
-  process.exitCode = 1;
 }
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) await main();

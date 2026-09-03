@@ -64,8 +64,8 @@ test("valid bearer deploy is attributed to the public handle only", async () => 
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ handle: "gate-agent", privateSink: true }),
-  })).json() as { id: string; clientSecret: string };
-  assert.equal((await app.request(`/api/v1/agent-connections/${started.id}/approve`, { method: "POST" })).status, 200);
+  })).json() as { id: string; clientSecret: string; approvalCode: string };
+  assert.equal((await app.request(`/api/v1/agent-connections/${started.id}/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approvalCode: started.approvalCode }) })).status, 200);
   const credential = await (await app.request(`/api/v1/agent-connections/${started.id}/poll`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -146,7 +146,7 @@ test("redirect state cannot become an open redirect", async () => {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ handle: "redirect-agent", privateSink: true }),
-  })).json() as { id: string };
+  })).json() as { id: string; approvalCode: string };
   const connect = await app.request(`/connect/${started.id}?redirect=${encodeURIComponent(evil)}&state=${encodeURIComponent(evil)}`);
   assert.equal(connect.status, 200);
   assert.equal(connect.headers.get("location"), null);

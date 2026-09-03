@@ -30,7 +30,7 @@ async function mint(app: ReturnType<typeof createApp>, handle: string, scope: st
   assert.equal(startResponse.status, 201);
   const started = await startResponse.json() as { id: string; clientSecret: string; scope: string | null };
   assert.equal(started.scope, scope);
-  assert.equal((await app.request(`/api/v1/agent-connections/${started.id}/approve`, { method: "POST" })).status, 200);
+  assert.equal((await app.request(`/api/v1/agent-connections/${started.id}/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approvalCode: started.approvalCode }) })).status, 200);
   const poll = await app.request(`/api/v1/agent-connections/${started.id}/poll`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -105,19 +105,12 @@ test("revocation is immediate, uses typed 401, and audits revoke plus use-after-
   assert.doesNotMatch(JSON.stringify(events), /oqt_/);
 });
 
-test("rotation overlaps: a second credential does not invalidate the first", async () => {
+test("handle uniqueness rejects a second active connection", async () => {
   const { app } = await fixture();
-  const first = await mint(app, "rotate-agent");
-  const second = await mint(app, "rotate-agent");
-  assert.notEqual(first.id, second.id);
-  assert.equal((await deploy(app, first.token, "rotation-one")).status, 201);
-  assert.equal((await deploy(app, second.token, "rotation-two")).status, 201);
-
-  const listed = await (await app.request("/api/v1/agent-connections", { headers: { authorization: `Bearer ${second.token}` } })).json() as { credentials: unknown[] };
-  assert.equal(listed.credentials.length, 2);
-  assert.equal((await app.request(`/api/v1/agent-connections/${first.id}`, { method: "DELETE", headers: { authorization: `Bearer ${second.token}` } })).status, 204);
-  assert.equal((await deploy(app, first.token, "rotation-denied")).status, 401);
-  assert.equal((await deploy(app, second.token, "rotation-still-live")).status, 201);
+  await mint(app, "rotate-agent");
+  const second = await app.request("/api/v1/agent-connections", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ handle: "rotate-agent", privateSink: true }) });
+  assert.equal(second.status, 409);
+  assert.deepEqual(await second.json(), { error: "That handle is already connected", code: "handle_taken" });
 });
 
 test("slug-prefix scope permits matching writes and denies others with typed 403", async () => {
@@ -136,7 +129,7 @@ test("only the owning handle may list or revoke credentials", async () => {
   const { app } = await fixture();
   const owner = await mint(app, "owner-agent");
   const other = await mint(app, "other-agent");
-  const otherList = await (await app.request("/api/v1/agent-connections", { headers: { authorization: `Bearer ${other.token}` } })).json() as { handle: string; credentials: Array<{ id: string }> };
+  const otherList = await (await app.request("/api/v1/agent-connections", { headers: { authorization: `Bearer ${other.token}` } })).json() as { handle: string; credentials: Array<{ id: string; approvalCode: string }> };
   assert.equal(otherList.handle, "other-agent");
   assert.equal(otherList.credentials.some((item) => item.id === owner.id), false);
   assert.equal((await app.request(`/api/v1/agent-connections/${owner.id}`, { method: "DELETE", headers: { authorization: `Bearer ${other.token}` } })).status, 404);
