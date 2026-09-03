@@ -58,6 +58,11 @@ You can deploy only if your runtime can store \`OPENQUICK_TOKEN\` privately and 
 
 If you do not have a private credential sink, stop after public discovery. The start API fails closed unless privateSink is true.
 
+## Long-lived credential lifecycle
+
+Approval creates a handle-bound credential with no expiry; the connection expiresAt applies only while approval is pending. An optional string scope in the start request is a literal site-slug prefix. Store the one-time private poll result as OPENQUICK_TOKEN. To rotate without downtime, approve a second connection for the same handle, switch clients, then revoke the old credential; minting does not invalidate earlier credentials. An active credential may list its handle-only metadata with GET ${baseUrl}/api/v1/agent-connections and revoke any credential for the same handle with DELETE ${baseUrl}/api/v1/agent-connections/{id}. Revocation is immediate. Lists expose only id, scope, created_at, last_used_at, and revoked_at—never secret material. Scoped out-of-prefix writes return typed 403 scope_denied.
+
+
 ## First deploy
 
 1. Read [the skill](${baseUrl}/skill.md) and [auth rules](${baseUrl}/auth.md).
@@ -156,7 +161,9 @@ OpenQuick is currently a private preview.
 
 ## Available now
 
-Agents start POST ${baseUrl}/api/v1/agent-connections with a proposed public handle and privateSink true. After a human opens the returned approvalUrl, the first private poll returns the deploy token once. Store it as OPENQUICK_TOKEN. Send it as Authorization Bearer only to ${baseUrl}. The operator admin token still works and is attributed as handle operator.
+Agents start POST ${baseUrl}/api/v1/agent-connections with a proposed public handle, privateSink true, and optional literal site-slug-prefix scope. After a human opens approvalUrl, the first private poll returns the deploy token once. Store it as OPENQUICK_TOKEN. The credential has no expiry after approval and remains valid until revoked. Send it as Authorization Bearer only to ${baseUrl}. The operator admin token still works for site writes and is attributed as handle operator.
+
+An active agent credential may GET ${baseUrl}/api/v1/agent-connections to list lifecycle metadata for its own handle and DELETE ${baseUrl}/api/v1/agent-connections/{id} to revoke a credential belonging to the same handle. Mint a replacement before revoking the old credential for rotation without downtime.
 
 ## Safety rules
 
@@ -168,16 +175,13 @@ Agents start POST ${baseUrl}/api/v1/agent-connections with a proposed public han
 
 ## Fail closed
 
-- Missing \`privateSink: true\` is rejected.
-- Unauthenticated writes (\`POST /api/v1/sites\`, deploy, rollback, and other console write methods) return \`401\` with code \`unauthorized\`. They never redirect.
-- Invalid or denied bearer tokens return \`401\`. Redirect \`state\`/\`next\`/\`redirect\` query values are ignored and cannot become an open redirect.
-- Successful writes are attributed as the public handle only (\`deployedBy\`). Responses, receipts, and hosted JavaScript never include email, sessions, or provider tokens.
-- If \`OPENQUICK_AUTH_BYPASS\` or \`OPENQUICK_INSECURE_COOKIES\` is enabled in production (\`NODE_ENV=production\`), writes return documented \`403\` with code \`insecure_mode\` even when a bearer token is present. Public reads still work.
-- Unapproved polls return \`pending\` with no token.
-- Expired activations return \`410\` and never mint a token.
-- A second poll after delivery returns \`409 replay\` with no token.
-- Approval pages and URLs never include the deploy token.
-- Logs and receipts use the public handle, never the secret.
+- Missing privateSink true is rejected.
+- Unauthenticated writes return 401 with code unauthorized and never redirect.
+- Revoked credentials immediately return that same typed 401. Out-of-scope writes return typed 403 scope_denied.
+- The pending approval expires, but an approved deploy credential does not.
+- A second poll after delivery returns 409 replay with no token.
+- Credential lists contain only id, scope, created_at, last_used_at, and revoked_at.
+- Approval pages, URLs, logs, audit records, errors, and ordinary responses never include credential material.
 
 See ${baseUrl}/agent.md for the exact first-deploy flow.
 `;
@@ -199,7 +203,7 @@ export function agentCard(baseUrl: string): Record<string, unknown> {
       public: ["health", "list_sites", "read_site", "read_site_history", "read_production_revision"],
       authenticated: ["deploy_static_site", "rollback_site"],
       connection: ["start_agent_connection", "human_approve", "private_poll"],
-      planned: ["scoped_credentials", "revocation_ui", "mcp"],
+      planned: ["mcp"],
     },
   };
 }
@@ -293,14 +297,25 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
         },
       },
       "/api/v1/agent-connections": {
-        post: {
-          operationId: "startAgentConnection",
-          summary: "Start a browser-mediated agent connection",
-          requestBody: {
-            required: true,
-            content: { "application/json": { schema: { type: "object", required: ["handle", "privateSink"], properties: { handle: { type: "string" }, privateSink: { type: "boolean" } } } } },
+        get: {
+          operationId: "listAgentCredentials", summary: "List credentials belonging to the authenticated handle", security: [{ bearerAuth: [] }],
+          responses: {
+            "200": { description: "Secret-free credential lifecycle metadata", content: { "application/json": { schema: { type: "object", required: ["handle", "credentials"], properties: { handle: { type: "string" }, credentials: { type: "array", items: { $ref: "#/components/schemas/AgentCredential" } } } } } } },
+            "401": { description: "Missing, invalid, or revoked token", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } },
           },
-          responses: { "201": { description: "Pending connection with approval URL and private poll secret" }, "400": { description: "Missing private sink or invalid handle" } },
+        },
+        post: {
+          operationId: "startAgentConnection", summary: "Start a browser-mediated agent connection",
+          description: "Approval creates an independent handle-bound credential with no expiry. Optional scope is a literal site-slug prefix.",
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["handle", "privateSink"], properties: { handle: { type: "string" }, privateSink: { type: "boolean" }, scope: { anyOf: [{ type: "string", pattern: "^[a-z0-9][a-z0-9-]{0,61}$" }, { type: "null" }] } } } } } },
+          responses: { "201": { description: "Pending connection with approval URL and private poll secret" }, "400": { description: "Missing private sink, invalid handle, or invalid scope" } },
+        },
+      },
+      "/api/v1/agent-connections/{id}": {
+        delete: {
+          operationId: "revokeAgentCredential", summary: "Immediately revoke a credential owned by the authenticated handle", security: [{ bearerAuth: [] }],
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", pattern: "^[a-f0-9]{32}$" } }],
+          responses: { "204": { description: "Credential revoked" }, "401": { description: "Missing, invalid, or revoked token", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }, "404": { description: "Credential not found for this handle" } },
         },
       },
       "/api/v1/agent-connections/{id}/approve": {
@@ -436,6 +451,17 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
     components: {
       securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } },
       schemas: {
+        AgentCredential: {
+          type: "object", additionalProperties: false,
+          required: ["id", "scope", "created_at", "last_used_at", "revoked_at"],
+          properties: {
+            id: { type: "string", pattern: "^[a-f0-9]{32}$", description: "Random credential identifier; not derived from the token." },
+            scope: { anyOf: [{ type: "string" }, { type: "null" }], description: "Literal site-slug prefix, or null for unrestricted." },
+            created_at: { type: "string", format: "date-time" },
+            last_used_at: { anyOf: [{ type: "string", format: "date-time" }, { type: "null" }] },
+            revoked_at: { anyOf: [{ type: "string", format: "date-time" }, { type: "null" }] },
+          },
+        },
         HealthResponse: {
           type: "object",
           additionalProperties: false,
@@ -546,7 +572,7 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
             error: { type: "string", minLength: 1 },
             code: {
               type: "string",
-              enum: ["unauthorized", "insecure_mode", "payload_too_large", "invalid_deployment", "invalid_release"],
+              enum: ["unauthorized", "insecure_mode", "payload_too_large", "invalid_deployment", "invalid_release", "scope_denied"],
             },
           },
         },

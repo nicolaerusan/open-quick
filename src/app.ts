@@ -4,7 +4,7 @@ import { logger } from "hono/logger";
 import type { OpenQuickRelease } from "./release-attestation.js";
 import type { DeployErrorCode, DeployErrorResponse, DeployPayload, RollbackPayload, SiteRecord } from "./types.js";
 import { ActivationStore } from "./activation.js";
-import { evaluateWriteGate, isConsoleWritePath, isWriteMethod, localRedirectPath, publicActor, type PublicActor } from "./auth-gate.js";
+import { evaluateWriteGate, isConsoleWritePath, isWriteMethod, localRedirectPath, publicActor, scopeAllowsSlug, type PublicActor } from "./auth-gate.js";
 import type { SiteStorage } from "./storage.js";
 import { MAX_DEPLOY_BYTES } from "./store.js";
 import { agentCard, agentMarkdown, authMarkdown, llmsTxt, openApiDocument, skillMarkdown } from "./agent-docs.js";
@@ -195,7 +195,7 @@ async function resolveBearerIdentity(options: AppOptions, authorization: string 
   if (!token || token.includes("\n") || token.includes("\r")) return null;
   if (options.adminToken && token === options.adminToken) return publicActor("operator");
   const identity = await options.activations.authenticate(token);
-  return identity ? publicActor(identity.handle) : null;
+  return identity ? publicActor(identity.handle, identity.credentialId, identity.scope) : null;
 }
 
 function writeGateOptions(options: AppOptions) {
@@ -223,6 +223,10 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     if (!isConsoleWritePath(pathname) || !isWriteMethod(c.req.method)) return next();
     const gated = await gateConsoleWrite(options, c.req.header("authorization"));
     if (!gated.ok) return c.json(gated.body, gated.status);
+    const slug = pathname.split("/")[4];
+    if (!scopeAllowsSlug(gated.actor.scope, slug)) {
+      return c.json(deployError("scope_denied", "Deploy credential is not authorized for this site slug"), 403);
+    }
     c.set("deployActor", gated.actor);
     return next();
   });
@@ -286,29 +290,32 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   });
   app.post("/api/v1/agent-connections", async (c) => {
     const origin = originOf(options, c.req.url);
-    const body = await c.req.json<{ handle?: string; privateSink?: boolean }>().catch(() => ({} as { handle?: string; privateSink?: boolean }));
+    const body = await c.req.json<{ handle?: string; privateSink?: boolean; scope?: string | null }>().catch(() => ({} as { handle?: string; privateSink?: boolean; scope?: string | null }));
     try {
-      const started = await options.activations.start({
-        handle: body.handle ?? "",
-        privateSink: body.privateSink === true,
-        origin,
-      });
+      const started = await options.activations.start({ handle: body.handle ?? "", privateSink: body.privateSink === true, origin, scope: body.scope ?? null });
       return c.json({
-        id: started.id,
-        handle: started.handle,
-        status: started.status,
-        approvalUrl: started.approvalUrl,
-        pollUrl: started.pollUrl,
-        expiresAt: started.expiresAt,
-        clientSecret: started.clientSecret,
+        id: started.id, handle: started.handle, status: started.status, scope: started.scope,
+        approvalUrl: started.approvalUrl, pollUrl: started.pollUrl, expiresAt: started.expiresAt, clientSecret: started.clientSecret,
       }, 201);
     } catch (error) {
       const code = error && typeof error === "object" && "code" in error ? String((error as { code: string }).code) : "";
-      if (code === "no_private_sink") {
-        return c.json({ error: "A private credential sink is required", code: "no_private_sink" }, 400);
-      }
+      if (code === "no_private_sink") return c.json({ error: "A private credential sink is required", code: "no_private_sink" }, 400);
+      if (code === "invalid_scope") return c.json({ error: "Invalid site slug-prefix scope", code: "invalid_scope" }, 400);
       return c.json({ error: "Invalid agent handle", code: "invalid_handle" }, 400);
     }
+  });
+  app.get("/api/v1/agent-connections", async (c) => {
+    const actor = await resolveBearerIdentity(options, c.req.header("authorization"));
+    if (!actor) return c.json(deployError("unauthorized", "A valid deploy token is required"), 401);
+    if (!actor.credentialId) return c.json(deployError("scope_denied", "An agent deploy credential is required"), 403);
+    return c.json({ handle: actor.handle, credentials: await options.activations.listCredentials(actor.handle) });
+  });
+  app.delete("/api/v1/agent-connections/:id", async (c) => {
+    const actor = await resolveBearerIdentity(options, c.req.header("authorization"));
+    if (!actor) return c.json(deployError("unauthorized", "A valid deploy token is required"), 401);
+    if (!actor.credentialId) return c.json(deployError("scope_denied", "An agent deploy credential is required"), 403);
+    const revoked = await options.activations.revoke(c.req.param("id"), actor.handle);
+    return revoked ? c.body(null, 204) : c.json({ error: "Credential not found" }, 404);
   });
   app.get("/connect/:id", async (c) => {
     const origin = originOf(options, c.req.url);

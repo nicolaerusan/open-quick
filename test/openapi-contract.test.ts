@@ -55,6 +55,7 @@ test("deploy response payloads satisfy the published OpenAPI contract", async ()
 
   assert.equal(document.openapi, "3.1.0");
   assert.deepEqual(Object.keys(document.components.schemas).sort(), [
+    "AgentCredential",
     "DeployReceipt",
     "ErrorEnvelope",
     "HealthResponse",

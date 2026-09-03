@@ -6,6 +6,8 @@ export const INSECURE_MODE_ERROR = "Production refuses writes while a local auth
 
 export type PublicActor = {
   handle: string;
+  credentialId?: string;
+  scope?: string | null;
 };
 
 export type WriteGateOptions = {
@@ -33,8 +35,12 @@ export function isWriteMethod(method: string): boolean {
 }
 
 /** Public attribution only: handle/id. Never email, sessions, or provider tokens. */
-export function publicActor(handle: string): PublicActor {
-  return { handle };
+export function publicActor(handle: string, credentialId?: string, scope?: string | null): PublicActor {
+  return { handle, ...(credentialId ? { credentialId } : {}), ...(scope !== undefined ? { scope } : {}) };
+}
+
+export function scopeAllowsSlug(scope: string | null | undefined, slug: string | undefined): boolean {
+  return scope == null || (typeof slug === "string" && slug.startsWith(scope));
 }
 
 export function evaluateWriteGate(
@@ -55,7 +61,7 @@ export function evaluateWriteGate(
       body: { error: "A valid deploy token is required", code: "unauthorized" },
     };
   }
-  return { ok: true, actor: publicActor(identity.handle) };
+  return { ok: true, actor: publicActor(identity.handle, identity.credentialId, identity.scope) };
 }
 
 /**
