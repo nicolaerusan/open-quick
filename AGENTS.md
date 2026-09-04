@@ -17,6 +17,7 @@ static assets and receive a shareable URL. Keep the product deliberately small.
 - Never log deploy tokens or uploaded file contents.
 - Validate slugs, paths, counts, and byte limits before writing assets.
 - Keep deployments atomic: a failed upload must not change the current release.
+- Sweep leftover `.upload-*` dirs and `.current-*.json` pointer temps on boot without touching the active pointer. Local tests use the filesystem adapter.
 - The first Railway topology is one service and one mounted volume. Do not add a
   queue, database, object store, or second service without an accepted task that
   explains why.

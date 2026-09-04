@@ -1,21 +1,32 @@
+import { ProPayments } from "./pro-payments.js";
 import { serve } from "@hono/node-server";
+import { ActivationStore } from "./activation.js";
 import { createApp } from "./app.js";
-import { SiteStore } from "./store.js";
+import { loadBootConfig } from "./boot.js";
+import { createFilesystemStorage } from "./store.js";
 
-const port = Number(process.env.PORT ?? "3000");
-const dataDir = process.env.DATA_DIR ?? ".data";
-const adminToken = process.env.OPENQUICK_ADMIN_TOKEN ?? (process.env.NODE_ENV === "production" ? "" : "dev-token");
+const boot = loadBootConfig(process.env);
 
-if (!adminToken) throw new Error("OPENQUICK_ADMIN_TOKEN is required in production");
-
-const store = new SiteStore(dataDir);
+const store = createFilesystemStorage(boot.dataDir);
+const activations = new ActivationStore(boot.dataDir);
 await store.initialize();
+await activations.initialize();
 const app = createApp({
   store,
-  adminToken,
-  ...(process.env.BASE_URL ? { baseUrl: process.env.BASE_URL.replace(/\/$/, "") } : {}),
+  ...(process.env.OPENQUICK_PRO_PAYMENTS === "true" ? { proPayments: new ProPayments({
+    root: boot.dataDir, recipient: process.env.OPENQUICK_PRO_RECIPIENT as `0x${string}`,
+    secret: process.env.OPENQUICK_PRO_SECRET ?? "", baseUrl: boot.baseUrl ?? "",
+    actors: (process.env.OPENQUICK_PRO_ACTORS ?? "operator").split(",").map((value) => value.trim()),
+  }, store) } : {}),
+  activations,
+  adminToken: boot.adminToken,
+  production: boot.production,
+  authBypass: boot.authBypass,
+  insecureCookies: boot.insecureCookies,
+  ...(boot.baseUrl ? { baseUrl: boot.baseUrl } : {}),
+  ...(boot.attestation ? { attestation: boot.attestation } : {}),
 });
 
-serve({ fetch: app.fetch, port }, (info) => {
+serve({ fetch: app.fetch, port: boot.port }, (info) => {
   console.log(`OpenQuick listening on http://localhost:${info.port}`);
 });

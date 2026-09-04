@@ -19,9 +19,10 @@ openquick deploy my-site
 
 - One Node.js 22 + TypeScript service built with Hono.
 - One TypeScript CLI shipped from the same package.
-- Immutable release folders and an atomic `current.json` pointer.
+- Typed `SiteStorage` with a filesystem adapter, immutable release folders, and an atomic `current.json` pointer. Failed uploads never swap the pointer; orphan cleanup is documented in [docs/STORAGE.md](./docs/STORAGE.md).
 - A mounted Railway volume at `/data` for durable assets.
-- Path-based URLs (`/sites/{slug}/`) until wildcard-domain routing is justified.
+- Path-based URLs (`/sites/{slug}/`) until wildcard-domain routing is justified. Hosted-content security headers and cache validators on that path are documented in [docs/PATH_MODE_HOSTING.md](./docs/PATH_MODE_HOSTING.md); dedicated host isolation remains on umbrella #62.
+- Hosted HTML gets a dismissable powered-by OpenQuick badge at serve time (opt out with `<meta name="openquick-badge" content="off">`). See [docs/POWERED_BY_BADGE.md](./docs/POWERED_BY_BADGE.md).
 - One deploy token, strict path validation, and bounded upload size/count.
 
 This is deliberately narrower than Shopify's internal platform. Database, AI,
@@ -44,6 +45,7 @@ The live service also publishes:
 - `/auth.md` — credential handling and private-preview limitations.
 - `/openapi.json` — machine-readable HTTP API.
 - `/.well-known/agent.json` — compact capability map.
+- `/.well-known/openquick-release.json` — credential-free production revision attestation.
 
 Deploy access currently requires an operator-provisioned token in a private
 credential store. Self-service activation and scoped, revocable agent keys are
@@ -83,6 +85,18 @@ npm run build
 3. Set `DATA_DIR=/data` and a long random `OPENQUICK_ADMIN_TOKEN`.
 4. Optionally set `BASE_URL` to the service's public HTTPS origin.
 5. Generate a Railway domain. The service health check is `/healthz`.
+6. At promotion (task #99), set these Docker build args / runtime env vars so
+   production can attest the exact Space-main pin. Production refuses to listen
+   if any are missing or malformed. Do not fall back to `RAILWAY_GIT_COMMIT_SHA`.
+   - `OPENQUICK_SOURCE_REVISION` — 40-character lowercase git SHA of the
+     promoted Space-main commit
+   - `OPENQUICK_BUILT_AT` — RFC 3339 UTC build timestamp
+   - `OPENQUICK_DEPLOYMENT_ID` — opaque Railway deployment/release id (not a secret)
+7. After deploy, verify with:
+   `node scripts/assert-production-revision.mjs --host https://<origin> --expect <sha>`
+
+Promotion contract gate (Space-main pin, build, and live OpenAPI/attestation checks):
+see [docs/PROMOTION.md](./docs/PROMOTION.md) and package script `gate:promotion`.
 
 The initial topology is intentionally a single service and volume, matching the
 constraint-driven spirit of Quick. Before using OpenQuick for untrusted public
@@ -102,7 +116,8 @@ stronger isolation model.
 ```
 
 Authenticate with `Authorization: Bearer $OPENQUICK_ADMIN_TOKEN`. A successful
-response includes the site record, immutable release identifier, and public URL.
+response includes the site record, mutable public URL (`url`), and immutable
+release permalink (`releaseUrl`).
 
 ## License
 

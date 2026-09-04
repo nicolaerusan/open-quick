@@ -1,21 +1,40 @@
+import { ProPayments, ProError } from "./pro-payments.js";
+import { proPage } from "./pro-page.js";
+import { readFile } from "node:fs/promises";
+import crypto from "node:crypto";
 import { Hono } from "hono";
 import { logger } from "hono/logger";
-import type { DeployPayload } from "./types.js";
-import { MAX_DEPLOY_BYTES, SiteStore } from "./store.js";
+import type { OpenQuickRelease } from "./release-attestation.js";
+import type { DeployErrorCode, DeployErrorResponse, DeployPayload, RollbackPayload, SiteRecord } from "./types.js";
+import { ActivationStore } from "./activation.js";
+import { evaluateWriteGate, isConsoleWritePath, isWriteMethod, localRedirectPath, publicActor, scopeAllowsSlug, type PublicActor } from "./auth-gate.js";
+import type { SiteStorage } from "./storage.js";
+import { MAX_DEPLOY_BYTES } from "./store.js";
 import { agentCard, agentMarkdown, authMarkdown, llmsTxt, openApiDocument, skillMarkdown } from "./agent-docs.js";
+import { maybeInjectHostedHtml } from "./powered-by.js";
 
 type AppOptions = {
-  store: SiteStore;
+  store: SiteStorage;
+  proPayments?: ProPayments;
+  activations: ActivationStore;
   adminToken: string;
+  production?: boolean;
+  authBypass?: boolean;
+  insecureCookies?: boolean;
   baseUrl?: string;
+  attestation?: OpenQuickRelease;
 };
+
+function deployError(code: DeployErrorCode, error: string): DeployErrorResponse {
+  return { error, code };
+}
 
 function escapeHtml(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
 }
 
-function landingPage(sites: Awaited<ReturnType<SiteStore["list"]>>, baseUrl: string): string {
+function landingPage(sites: Awaited<ReturnType<SiteStorage["list"]>>, baseUrl: string): string {
   const cards = sites.length === 0
     ? `<article class="empty"><span>NO DEPLOYS YET</span><h3>Your first tiny internet starts here.</h3><p>Run the deploy command from any folder containing an index.html.</p></article>`
     : sites.map((site) => `<a class="site" href="/sites/${encodeURIComponent(site.slug)}/">
@@ -50,17 +69,214 @@ footer{margin-top:100px;padding-top:34px;padding-bottom:60px;border-top:1px soli
 }
 
 function joinPage(baseUrl: string): string {
-  const prompt = `Open ${baseUrl}/agent.md. Assess whether you can store a deploy credential privately. If you can, follow the first-deploy workflow and return a verified deployment receipt. If you cannot, stop after public discovery and explain what private credential capability is missing.`;
+  const prompt = `Open ${baseUrl}/agent.md. If you can store a credential privately, POST ${baseUrl}/api/v1/agent-connections with a proposed handle and privateSink:true, ask a human to open the returned approval URL, then poll for the deploy token into your private sink. Never paste the token in chat. Deploy, verify, and return a receipt with the public handle.` ;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Join OpenQuick as an agent</title><style>
 :root{color-scheme:dark;--ink:#f5f2e9;--muted:#aaa79f;--line:#373733;--lime:#c9ff38;--orange:#ff6b35}*{box-sizing:border-box}body{margin:0;background:#0d0d0c;color:var(--ink);font-family:Inter,system-ui,sans-serif}main{max-width:1050px;margin:auto;padding:36px 28px 90px}nav{display:flex;justify-content:space-between;padding-bottom:28px;border-bottom:1px solid var(--line);font:800 12px ui-monospace,monospace}a{color:var(--lime)}.hero{padding:80px 0 54px}small{font:800 11px ui-monospace,monospace;color:var(--lime);letter-spacing:.13em}h1{font-size:clamp(56px,10vw,112px);line-height:.86;letter-spacing:-.07em;margin:24px 0 30px}.lead{font-size:21px;line-height:1.55;color:var(--muted);max-width:720px}.notice{border:1px solid var(--orange);padding:20px 22px;margin:32px 0;color:#ffd8ca}.grid{display:grid;grid-template-columns:repeat(2,1fr);border:1px solid var(--line)}article{padding:30px;min-height:225px;border-bottom:1px solid var(--line)}article:nth-child(odd){border-right:1px solid var(--line)}article:nth-last-child(-n+2){border-bottom:0}article b{font:800 12px ui-monospace,monospace;color:var(--orange)}h2{font-size:27px;letter-spacing:-.04em;margin:42px 0 12px}p{color:var(--muted);line-height:1.55}.prompt{margin-top:54px}.prompt pre{white-space:pre-wrap;background:var(--ink);color:#141412;padding:24px;font:700 13px/1.6 ui-monospace,monospace;overflow:auto}.resources{display:flex;flex-wrap:wrap;gap:18px;margin-top:30px;font:800 12px ui-monospace,monospace}@media(max-width:680px){.grid{grid-template-columns:1fr}article,article:nth-child(odd),article:nth-last-child(-n+2){border-right:0;border-bottom:1px solid var(--line)}article:last-child{border-bottom:0}}
-</style></head><body><main><nav><a href="/">← OPENQUICK</a><span>AGENT ONBOARDING / PRIVATE PREVIEW</span></nav><section class="hero"><small>CANONICAL START / 001</small><h1>JOIN.<br>DEPLOY.<br>VERIFY.</h1><p class="lead">An agent should be able to discover what OpenQuick does, determine whether it can connect safely, complete one deploy, and prove the public result without reverse-engineering the service.</p><div class="notice"><strong>Current boundary:</strong> public discovery is live. Deploy access still requires an operator to inject a token into the agent's private environment. Self-service activation is the next milestone.</div></section><section class="grid"><article><b>01 / DISCOVER</b><h2>Read one URL</h2><p><a href="/agent.md">agent.md</a> contains the live workflow, limits, safety rules, and machine-readable links.</p></article><article><b>02 / QUALIFY</b><h2>Check the runtime</h2><p>The agent confirms it can store a credential privately. If it cannot, it stops before requesting a secret in chat.</p></article><article><b>03 / DEPLOY</b><h2>Ship a disposable slug</h2><p>Build the TypeScript CLI, deploy a static folder, and receive a public URL plus release ID.</p></article><article><b>04 / VERIFY</b><h2>Return evidence</h2><p>Fetch the live page and report the slug, URL, release, file count, timestamp, and observed result.</p></article></section><section class="prompt"><small>COPY THIS TO AN AGENT</small><pre>${escapeHtml(prompt)}</pre><div class="resources"><a href="/llms.txt">LLMS.TXT</a><a href="/skill.md">SKILL.MD</a><a href="/auth.md">AUTH.MD</a><a href="/openapi.json">OPENAPI.JSON</a><a href="/.well-known/agent.json">AGENT.JSON</a></div></section></main></body></html>`;
+</style></head><body><main><nav><a href="/">← OPENQUICK</a><span>AGENT ONBOARDING / PRIVATE PREVIEW</span></nav><section class="hero"><small>CANONICAL START / 001</small><h1>JOIN.<br>DEPLOY.<br>VERIFY.</h1><p class="lead">An agent should be able to discover what OpenQuick does, determine whether it can connect safely, complete one deploy, and prove the public result without reverse-engineering the service.</p><div class="notice"><strong>Current boundary:</strong> public discovery is live. Agents may start a browser-mediated connection: a human opens one approval URL, then a deploy credential is delivered once to the agent's private poll sink. Never paste tokens in chat.</div></section><section class="grid"><article><b>01 / DISCOVER</b><h2>Read one URL</h2><p><a href="/agent.md">agent.md</a> contains the live workflow, limits, safety rules, and machine-readable links.</p></article><article><b>02 / QUALIFY</b><h2>Check the runtime</h2><p>The agent confirms it can store a credential privately. If it cannot, it stops before requesting a secret in chat.</p></article><article><b>03 / DEPLOY</b><h2>Ship a disposable slug</h2><p>Build the TypeScript CLI, deploy a static folder, and receive a public URL plus release ID.</p></article><article><b>04 / VERIFY</b><h2>Return evidence</h2><p>Fetch the live page and report the slug, URL, release, file count, timestamp, and observed result.</p></article></section><section class="prompt"><small>COPY THIS TO AN AGENT</small><pre>${escapeHtml(prompt)}</pre><div class="resources"><a href="/llms.txt">LLMS.TXT</a><a href="/skill.md">SKILL.MD</a><a href="/auth.md">AUTH.MD</a><a href="/openapi.json">OPENAPI.JSON</a><a href="/.well-known/agent.json">AGENT.JSON</a></div></section></main></body></html>`;
 }
 
-export function createApp(options: AppOptions): Hono {
-  const app = new Hono();
-  app.use(logger());
 
+function originOf(options: AppOptions, url: string): string {
+  return options.baseUrl || new URL(url).origin;
+}
+
+function publicSiteUrls(origin: string, site: SiteRecord): { url: string; releaseUrl: string } {
+  const slug = encodeURIComponent(site.slug);
+  return {
+    url: `${origin}/sites/${slug}/`,
+    releaseUrl: `${origin}/sites/${slug}/releases/${encodeURIComponent(site.releaseId)}/`,
+  };
+}
+
+function storeErrorCode(error: unknown): string {
+  return error && typeof error === "object" && "code" in error ? String((error as { code: string }).code) : "";
+}
+
+/** Path-mode headers for untrusted HTML/assets on /sites/{slug}/. Host isolation is #62. */
+export const HOSTED_CONTENT_SECURITY_HEADERS = {
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+  "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=(), browsing-topics=()",
+  "content-security-policy": "object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+} as const;
+
+function hostedNotFound(): Response {
+  return new Response("Site or asset not found", {
+    status: 404,
+    headers: {
+      "content-type": "text/plain; charset=UTF-8",
+      ...HOSTED_CONTENT_SECURITY_HEADERS,
+    },
+  });
+}
+
+function strongEtag(bytes: Uint8Array): string {
+  return `"${crypto.createHash("sha256").update(bytes).digest("hex")}"`;
+}
+
+function ifNoneMatchHits(header: string | undefined, etag: string): boolean {
+  if (!header) return false;
+  const tags = header.split(",").map((part) => part.trim()).filter(Boolean);
+  if (tags.includes("*")) return true;
+  const quoted = etag;
+  const weak = etag.startsWith("W/") ? etag : `W/${etag}`;
+  const strong = etag.startsWith("W/") ? etag.slice(2) : etag;
+  return tags.some((tag) => tag === quoted || tag === weak || tag === strong);
+}
+
+function ifModifiedSinceFresh(header: string | undefined, mtime: Date): boolean {
+  if (!header) return false;
+  const since = Date.parse(header);
+  if (Number.isNaN(since)) return false;
+  return Math.floor(mtime.getTime() / 1000) <= Math.floor(since / 1000);
+}
+
+function assetResponse(
+  asset: { bytes: Uint8Array; contentType: string; mtime: Date },
+  cacheControl: string,
+  request: { header(name: string): string | undefined },
+  origin: string,
+): Response {
+  const bytes = maybeInjectHostedHtml(
+    asset.bytes,
+    asset.contentType,
+    origin,
+    request.header("x-openquick-badge"),
+  );
+  const injected = bytes !== asset.bytes;
+  const body = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
+  const etag = strongEtag(bytes);
+  const lastModified = asset.mtime.toUTCString();
+  const validators = {
+    etag,
+    "last-modified": lastModified,
+    "cache-control": cacheControl,
+  };
+  const ifNoneMatch = request.header("if-none-match");
+  const unchanged = ifNoneMatch
+    ? ifNoneMatchHits(ifNoneMatch, etag)
+    : !injected && ifModifiedSinceFresh(request.header("if-modified-since"), asset.mtime);
+  if (unchanged) {
+    return new Response(null, {
+      status: 304,
+      headers: { ...HOSTED_CONTENT_SECURITY_HEADERS, ...validators },
+    });
+  }
+  return new Response(body, {
+    headers: {
+      "content-type": asset.contentType,
+      ...HOSTED_CONTENT_SECURITY_HEADERS,
+      ...validators,
+    },
+  });
+}
+
+function connectApprovePage(handle: string, id: string): string {
+  const safeHandle = escapeHtml(handle);
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Approve OpenQuick agent</title>
+<style>body{margin:0;background:#0d0d0c;color:#f5f2e9;font-family:Inter,system-ui,sans-serif}main{max-width:640px;margin:auto;padding:48px 24px}h1{letter-spacing:-.05em}p{color:#aaa79f;line-height:1.55}button{background:#c9ff38;color:#111;border:0;padding:14px 18px;font:800 13px ui-monospace,monospace;cursor:pointer}#status{margin-top:18px;font:700 13px ui-monospace,monospace}</style>
+</head><body><main><p>OPENQUICK / AGENT CONNECTION</p><h1>Approve ${safeHandle}?</h1><p>This mints a deploy credential and delivers it once to the waiting agent. The token is never shown on this page or in the URL.</p>
+<form id="approve"><label>Requester code <input id="code" inputmode="numeric" pattern="[0-9]{6}" required></label><button type="submit">Approve connection</button></form><p id="status"></p>
+<script>
+document.getElementById("approve").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const status = document.getElementById("status");
+  status.textContent = "Approving…";
+  const response = await fetch("/api/v1/agent-connections/${id}/approve", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approvalCode: document.getElementById("code").value }) });
+  const body = await response.json();
+  status.textContent = response.ok ? "Approved. The agent can now poll privately." : (body.error || "Approval failed");
+});
+</script></main></body></html>`;
+}
+
+async function resolveBearerIdentity(options: AppOptions, authorization: string | undefined): Promise<PublicActor | null> {
+  const prefix = "Bearer ";
+  if (!authorization?.startsWith(prefix)) return null;
+  const token = authorization.slice(prefix.length);
+  if (!token || token.includes("\n") || token.includes("\r")) return null;
+  if (options.adminToken && token === options.adminToken) return publicActor("operator");
+  const identity = await options.activations.authenticate(token);
+  return identity ? publicActor(identity.handle, identity.credentialId, identity.scope) : null;
+}
+
+function writeGateOptions(options: AppOptions) {
+  return {
+    production: options.production === true,
+    authBypass: options.authBypass === true,
+    insecureCookies: options.insecureCookies === true,
+  };
+}
+
+async function gateConsoleWrite(options: AppOptions, authorization: string | undefined): Promise<
+  { ok: true; actor: PublicActor } | { ok: false; status: 401 | 403; body: DeployErrorResponse }
+> {
+  const identity = await resolveBearerIdentity(options, authorization);
+  return evaluateWriteGate(writeGateOptions(options), identity);
+}
+
+type AppEnv = { Variables: { deployActor: PublicActor } };
+
+export function createApp(options: AppOptions): Hono<AppEnv> {
+  const app = new Hono<AppEnv>();
+  const requestLogger = logger();
+  app.use(async (c, next) => {
+    // Payment links are private capabilities; keep them out of access logs.
+    if (new URL(c.req.url).pathname.startsWith("/api/v1/pro-payments/") || new URL(c.req.url).pathname.startsWith("/pro/")) return next();
+    return requestLogger(c, next);
+  });
+  app.use(async (c, next) => {
+    const pathname = new URL(c.req.url).pathname;
+    if (!isConsoleWritePath(pathname) || !isWriteMethod(c.req.method)) return next();
+    const gated = await gateConsoleWrite(options, c.req.header("authorization"));
+    if (!gated.ok) return c.json(gated.body, gated.status);
+    const slug = pathname.split("/")[4];
+    if (slug && /^oq-pro-[a-f0-9]{24}$/.test(slug)) return c.json(deployError("scope_denied", "Pro releases are immutable; create a new Pro deploy intent"), 403);
+    if (!scopeAllowsSlug(gated.actor.scope, slug)) {
+      return c.json(deployError("scope_denied", "Deploy credential is not authorized for this site slug"), 403);
+    }
+    c.set("deployActor", gated.actor);
+    return next();
+  });
+
+  app.get("/pro", (c) => c.html(proPage()));
+  app.get("/pro/:id", (c) => c.html(proPage(c.req.param("id")), 200, { "cache-control": "no-store", "referrer-policy": "no-referrer" }));
+  app.get("/pro-client.js", async (c) => c.body(await readFile(new URL("./pro-client.js", import.meta.url), "utf8"), 200, { "content-type": "text/javascript" }));
+  app.use("/api/v1/pro-payments/*", async (c, next) => { c.header("cache-control", "no-store"); await next(); });
+  app.post("/api/v1/pro-deploys", async (c) => {
+    c.header("cache-control", "no-store");
+    if (!options.proPayments) return c.json({ error: "Pro payment pilot is disabled" }, 404);
+    const gated = await gateConsoleWrite(options, c.req.header("authorization"));
+    if (!gated.ok) return c.json(gated.body, gated.status);
+    if (gated.actor.scope != null) return c.json({ error: "Scoped credentials cannot create Pro release slugs" }, 403);
+    try {
+      // Bound actual streamed bytes, including chunked requests, before JSON parsing.
+      const reader = c.req.raw.body?.getReader(); if (!reader) return c.json({ error: "Missing content" }, 422);
+      const chunks: Uint8Array[] = []; let size = 0;
+      for (;;) { const part = await reader.read(); if (part.done) break; size += part.value.length;
+        if (size > 1_500_000) { await reader.cancel(); return c.json({ error: "Pro request exceeds 1.5 MB" }, 413); } chunks.push(part.value); }
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      return c.json(await options.proPayments.create(gated.actor.handle, c.req.header("idempotency-key") ?? "", body.files), 201);
+    } catch (error) { return c.json({ error: error instanceof ProError ? error.message : "Invalid Pro deployment" }, error instanceof ProError ? error.status as 422 : 422); }
+  });
+  app.get("/api/v1/pro-payments/:id", (c) => {
+    if (!options.proPayments) return c.json({ error: "Pro payment pilot is disabled" }, 404);
+    try { return c.json(options.proPayments.view(options.proPayments.read(c.req.param("id")))); }
+    catch { return c.json({ error: "Intent not found" }, 404); }
+  });
+  app.all("/api/v1/pro-payments/:id/pay", async (c) => {
+    if (!["GET", "POST"].includes(c.req.method)) return c.json({ error: "Method not allowed" }, 405);
+    if (!options.proPayments) return c.json({ error: "Pro payment pilot is disabled" }, 404);
+    try { return await options.proPayments.pay(c.req.param("id"), c.req.raw); }
+    catch (error) { return c.json({ error: error instanceof ProError ? error.message : "Publication temporarily unavailable; retry this same intent" }, error instanceof ProError ? error.status as 422 : 503); }
+  });
   app.get("/healthz", (c) => c.json({ ok: true }));
+  app.get("/.well-known/openquick-release.json", (c) => {
+    if (!options.attestation) return c.json({ error: "Not found" }, 404);
+    return c.json(options.attestation, 200, { "cache-control": "no-store" });
+  });
   app.get("/llms.txt", (c) => {
     const origin = options.baseUrl || new URL(c.req.url).origin;
     return c.text(llmsTxt(origin), 200, { "content-type": "text/plain; charset=UTF-8" });
@@ -94,42 +310,158 @@ export function createApp(options: AppOptions): Hono {
     try { return c.json({ site: await options.store.site(c.req.param("slug")) }); }
     catch { return c.json({ error: "Site not found" }, 404); }
   });
-  app.post("/api/v1/sites/:slug/deploy", async (c) => {
-    const authorization = c.req.header("authorization");
-    if (!options.adminToken || authorization !== `Bearer ${options.adminToken}`) {
-      return c.json({ error: "A valid deploy token is required" }, 401);
+  app.get("/api/v1/sites/:slug/releases", async (c) => {
+    try {
+      const slug = c.req.param("slug");
+      const site = await options.store.site(slug);
+      const releases = await options.store.history(slug);
+      const origin = originOf(options, c.req.url);
+      const urls = publicSiteUrls(origin, site);
+      return c.json({
+        site,
+        url: urls.url,
+        releaseUrl: urls.releaseUrl,
+        fileCount: site.fileCount,
+        totalBytes: site.totalBytes,
+        releases,
+      });
+    } catch {
+      return c.json({ error: "Site not found" }, 404);
     }
+  });
+  app.post("/api/v1/agent-connections", async (c) => {
+    const origin = originOf(options, c.req.url);
+    const body = await c.req.json<{ handle?: string; privateSink?: boolean; scope?: string | null }>().catch(() => ({} as { handle?: string; privateSink?: boolean; scope?: string | null }));
+    try {
+      const started = await options.activations.start({ handle: body.handle ?? "", privateSink: body.privateSink === true, origin, scope: body.scope ?? null });
+      return c.json({
+        id: started.id, handle: started.handle, status: started.status, scope: started.scope,
+        approvalUrl: started.approvalUrl, pollUrl: started.pollUrl, expiresAt: started.expiresAt, clientSecret: started.clientSecret, approvalCode: started.approvalCode,
+      }, 201);
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? String((error as { code: string }).code) : "";
+      if (code === "no_private_sink") return c.json({ error: "A private credential sink is required", code: "no_private_sink" }, 400);
+      if (code === "invalid_scope") return c.json({ error: "Invalid site slug-prefix scope", code: "invalid_scope" }, 400);
+      if (code === "handle_taken") return c.json({ error: "That handle is already connected", code: "handle_taken" }, 409);
+      return c.json({ error: "Invalid agent handle", code: "invalid_handle" }, 400);
+    }
+  });
+  app.get("/api/v1/agent-connections", async (c) => {
+    const actor = await resolveBearerIdentity(options, c.req.header("authorization"));
+    if (!actor) return c.json(deployError("unauthorized", "A valid deploy token is required"), 401);
+    if (!actor.credentialId) return c.json(deployError("scope_denied", "An agent deploy credential is required"), 403);
+    return c.json({ handle: actor.handle, credentials: await options.activations.listCredentials(actor.handle) });
+  });
+  app.delete("/api/v1/agent-connections/:id", async (c) => {
+    const actor = await resolveBearerIdentity(options, c.req.header("authorization"));
+    if (!actor) return c.json(deployError("unauthorized", "A valid deploy token is required"), 401);
+    if (!actor.credentialId) return c.json(deployError("scope_denied", "An agent deploy credential is required"), 403);
+    const revoked = await options.activations.revoke(c.req.param("id"), actor.handle);
+    return revoked ? c.body(null, 204) : c.json({ error: "Credential not found" }, 404);
+  });
+  app.get("/connect/:id", async (c) => {
+    const origin = originOf(options, c.req.url);
+    const url = new URL(c.req.url);
+    for (const key of ["redirect", "next", "return", "return_to", "state", "goto", "callback"]) {
+      url.searchParams.delete(key);
+    }
+    const activation = await options.activations.publicById(c.req.param("id"), origin);
+    if (!activation) return c.text("Activation not found", 404);
+    if (activation.status === "expired") return c.text("This activation expired", 410);
+    if (activation.status !== "pending") return c.text("This activation is no longer pending", 409);
+    return c.html(connectApprovePage(activation.handle, activation.id));
+  });
+  app.post("/api/v1/agent-connections/:id/approve", async (c) => {
+    const origin = originOf(options, c.req.url);
+    const body = await c.req.json<{ approvalCode?: string }>().catch(() => ({} as { approvalCode?: string }));
+    try {
+      const approved = await options.activations.approve(c.req.param("id"), origin, body.approvalCode ?? "");
+      return c.json({ id: approved.id, handle: approved.handle, status: approved.status, expiresAt: approved.expiresAt });
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? String((error as { code: string }).code) : "";
+      if (code === "expired") return c.json({ error: "Activation expired", code: "expired" }, 410);
+      if (code === "replay") return c.json({ error: "Activation is no longer pending", code: "replay" }, 409);
+      if (code === "invalid_code") return c.json({ error: "Invalid approval code", code: "invalid_code" }, 401);
+      return c.json({ error: "Activation not found", code: "not_found" }, 404);
+    }
+  });
+  app.post("/api/v1/agent-connections/:id/poll", async (c) => {
+    const body = await c.req.json<{ clientSecret?: string }>().catch(() => ({} as { clientSecret?: string }));
+    const authorization = c.req.header("authorization");
+    const clientSecret = body.clientSecret
+      ?? (authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : "");
+    try {
+      const polled = await options.activations.poll(c.req.param("id"), clientSecret);
+      if (polled.status === "expired") {
+        return c.json({ status: "expired", error: "Activation expired", code: "expired" }, 410);
+      }
+      if (polled.status === "delivered") {
+        return c.json({ status: "delivered", handle: polled.handle, error: "Deploy credential already delivered", code: "replay" }, 409);
+      }
+      const payload: Record<string, unknown> = { status: polled.status, handle: polled.handle, expiresAt: polled.expiresAt };
+      if (polled.token) payload.token = polled.token;
+      return c.json(payload);
+    } catch {
+      return c.json({ error: "A valid client secret is required", code: "unauthorized" }, 401);
+    }
+  });
+  app.post("/api/v1/sites/:slug/deploy", async (c) => {
+    const actor = c.get("deployActor") as PublicActor;
     const length = Number(c.req.header("content-length") ?? "0");
     if (Number.isFinite(length) && length > Math.ceil(MAX_DEPLOY_BYTES * 1.45)) {
-      return c.json({ error: "Deploy request is too large" }, 413);
+      return c.json(deployError("payload_too_large", "Deploy request is too large"), 413);
     }
     try {
       const payload = await c.req.json<DeployPayload>();
-      const site = await options.store.deploy(c.req.param("slug"), payload.files);
-      const origin = options.baseUrl || new URL(c.req.url).origin;
-      return c.json({ site, url: `${origin}/sites/${encodeURIComponent(site.slug)}/` }, 201);
-    } catch (error) {
-      return c.json({ error: error instanceof Error ? error.message : "Invalid deploy" }, 422);
+      const site = await options.store.deploy(c.req.param("slug"), payload.files, actor.handle);
+      const origin = originOf(options, c.req.url);
+      return c.json({ site, ...publicSiteUrls(origin, site) }, 201);
+    } catch {
+      // Keep validation responses stable and safe. Store and parser errors can
+      // contain user paths or provider details that must not cross the API.
+      return c.json(deployError("invalid_deployment", "Deployment validation failed"), 422);
     }
   });
-  app.get("/sites/:slug", (c) => c.redirect(`/sites/${encodeURIComponent(c.req.param("slug"))}/`, 308));
+  app.post("/api/v1/sites/:slug/rollback", async (c) => {
+    const actor = c.get("deployActor") as PublicActor;
+    const payload = await c.req.json<RollbackPayload>().catch(() => ({ releaseId: "" } as RollbackPayload));
+    const releaseId = typeof payload.releaseId === "string" ? payload.releaseId : "";
+    try {
+      const result = await options.store.rollback(c.req.param("slug"), releaseId, actor.handle);
+      const origin = originOf(options, c.req.url);
+      return c.json({ site: result.site, ...publicSiteUrls(origin, result.site) });
+    } catch (error) {
+      const code = storeErrorCode(error);
+      if (code === "not_found") return c.json({ error: "Site not found" }, 404);
+      if (code === "invalid_release") {
+        return c.json(deployError("invalid_release", "Unknown or invalid release"), 422);
+      }
+      return c.json(deployError("invalid_release", "Unknown or invalid release"), 422);
+    }
+  });
+  app.get("/sites/:slug/releases/:releaseId", (c) => {
+    const slug = encodeURIComponent(c.req.param("slug"));
+    const releaseId = encodeURIComponent(c.req.param("releaseId"));
+    return c.redirect(localRedirectPath(`/sites/${slug}/releases/${releaseId}/`), 308);
+  });
+  app.get("/sites/:slug/releases/:releaseId/*", async (c) => {
+    const slug = c.req.param("slug");
+    const releaseId = c.req.param("releaseId");
+    const prefix = `/sites/${slug}/releases/${releaseId}/`;
+    const path = new URL(c.req.url).pathname.slice(prefix.length);
+    try {
+      const asset = await options.store.assetAtRelease(slug, releaseId, path);
+      return assetResponse(asset, "public, max-age=31536000, immutable", c.req, originOf(options, c.req.url));
+    } catch { return hostedNotFound(); }
+  });
+  app.get("/sites/:slug", (c) => c.redirect(localRedirectPath(`/sites/${encodeURIComponent(c.req.param("slug"))}/`), 308));
   app.get("/sites/:slug/*", async (c) => {
     const prefix = `/sites/${c.req.param("slug")}/`;
     const path = new URL(c.req.url).pathname.slice(prefix.length);
     try {
       const asset = await options.store.asset(c.req.param("slug"), path);
-      const body = asset.bytes.buffer.slice(
-        asset.bytes.byteOffset,
-        asset.bytes.byteOffset + asset.bytes.byteLength,
-      ) as ArrayBuffer;
-      return new Response(body, {
-        headers: {
-          "content-type": asset.contentType,
-          "cache-control": asset.path === "index.html" ? "no-cache" : "public, max-age=300",
-          "x-content-type-options": "nosniff",
-        },
-      });
-    } catch { return c.text("Site or asset not found", 404); }
+      return assetResponse(asset, asset.path === "index.html" ? "no-cache" : "public, max-age=300", c.req, originOf(options, c.req.url));
+    } catch { return hostedNotFound(); }
   });
   app.get("/", async (c) => {
     const origin = options.baseUrl || new URL(c.req.url).origin;
