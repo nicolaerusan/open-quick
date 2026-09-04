@@ -1,3 +1,6 @@
+import { ProPayments, ProError } from "./pro-payments.js";
+import { proPage } from "./pro-page.js";
+import { readFile } from "node:fs/promises";
 import crypto from "node:crypto";
 import { Hono } from "hono";
 import { logger } from "hono/logger";
@@ -12,6 +15,7 @@ import { maybeInjectHostedHtml } from "./powered-by.js";
 
 type AppOptions = {
   store: SiteStorage;
+  proPayments?: ProPayments;
   activations: ActivationStore;
   adminToken: string;
   production?: boolean;
@@ -217,13 +221,19 @@ type AppEnv = { Variables: { deployActor: PublicActor } };
 
 export function createApp(options: AppOptions): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
-  app.use(logger());
+  const requestLogger = logger();
+  app.use(async (c, next) => {
+    // Payment links are private capabilities; keep them out of access logs.
+    if (new URL(c.req.url).pathname.startsWith("/api/v1/pro-payments/") || new URL(c.req.url).pathname.startsWith("/pro/")) return next();
+    return requestLogger(c, next);
+  });
   app.use(async (c, next) => {
     const pathname = new URL(c.req.url).pathname;
     if (!isConsoleWritePath(pathname) || !isWriteMethod(c.req.method)) return next();
     const gated = await gateConsoleWrite(options, c.req.header("authorization"));
     if (!gated.ok) return c.json(gated.body, gated.status);
     const slug = pathname.split("/")[4];
+    if (slug && /^oq-pro-[a-f0-9]{24}$/.test(slug)) return c.json(deployError("scope_denied", "Pro releases are immutable; create a new Pro deploy intent"), 403);
     if (!scopeAllowsSlug(gated.actor.scope, slug)) {
       return c.json(deployError("scope_denied", "Deploy credential is not authorized for this site slug"), 403);
     }
@@ -231,6 +241,37 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     return next();
   });
 
+  app.get("/pro", (c) => c.html(proPage()));
+  app.get("/pro/:id", (c) => c.html(proPage(c.req.param("id")), 200, { "cache-control": "no-store", "referrer-policy": "no-referrer" }));
+  app.get("/pro-client.js", async (c) => c.body(await readFile(new URL("./pro-client.js", import.meta.url), "utf8"), 200, { "content-type": "text/javascript" }));
+  app.use("/api/v1/pro-payments/*", async (c, next) => { c.header("cache-control", "no-store"); await next(); });
+  app.post("/api/v1/pro-deploys", async (c) => {
+    c.header("cache-control", "no-store");
+    if (!options.proPayments) return c.json({ error: "Pro payment pilot is disabled" }, 404);
+    const gated = await gateConsoleWrite(options, c.req.header("authorization"));
+    if (!gated.ok) return c.json(gated.body, gated.status);
+    if (gated.actor.scope != null) return c.json({ error: "Scoped credentials cannot create Pro release slugs" }, 403);
+    try {
+      // Bound actual streamed bytes, including chunked requests, before JSON parsing.
+      const reader = c.req.raw.body?.getReader(); if (!reader) return c.json({ error: "Missing content" }, 422);
+      const chunks: Uint8Array[] = []; let size = 0;
+      for (;;) { const part = await reader.read(); if (part.done) break; size += part.value.length;
+        if (size > 1_500_000) { await reader.cancel(); return c.json({ error: "Pro request exceeds 1.5 MB" }, 413); } chunks.push(part.value); }
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      return c.json(await options.proPayments.create(gated.actor.handle, c.req.header("idempotency-key") ?? "", body.files), 201);
+    } catch (error) { return c.json({ error: error instanceof ProError ? error.message : "Invalid Pro deployment" }, error instanceof ProError ? error.status as 422 : 422); }
+  });
+  app.get("/api/v1/pro-payments/:id", (c) => {
+    if (!options.proPayments) return c.json({ error: "Pro payment pilot is disabled" }, 404);
+    try { return c.json(options.proPayments.view(options.proPayments.read(c.req.param("id")))); }
+    catch { return c.json({ error: "Intent not found" }, 404); }
+  });
+  app.all("/api/v1/pro-payments/:id/pay", async (c) => {
+    if (!["GET", "POST"].includes(c.req.method)) return c.json({ error: "Method not allowed" }, 405);
+    if (!options.proPayments) return c.json({ error: "Pro payment pilot is disabled" }, 404);
+    try { return await options.proPayments.pay(c.req.param("id"), c.req.raw); }
+    catch (error) { return c.json({ error: error instanceof ProError ? error.message : "Publication temporarily unavailable; retry this same intent" }, error instanceof ProError ? error.status as 422 : 503); }
+  });
   app.get("/healthz", (c) => c.json({ ok: true }));
   app.get("/.well-known/openquick-release.json", (c) => {
     if (!options.attestation) return c.json({ error: "Not found" }, 404);

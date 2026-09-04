@@ -62,7 +62,7 @@ function contained(root: string, path: string): string {
   return target;
 }
 
-function prepareFiles(files: DeployFile[]): { files: PreparedFile[]; totalBytes: number } {
+export function prepareFiles(files: DeployFile[]): { files: PreparedFile[]; totalBytes: number } {
   if (!Array.isArray(files) || files.length === 0) throw new Error("A deploy needs at least one file");
   if (files.length > MAX_FILE_COUNT) throw new Error(`A deploy may contain at most ${MAX_FILE_COUNT} files`);
 

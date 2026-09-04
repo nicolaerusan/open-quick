@@ -1,3 +1,4 @@
+import { ProPayments } from "./pro-payments.js";
 import { serve } from "@hono/node-server";
 import { ActivationStore } from "./activation.js";
 import { createApp } from "./app.js";
@@ -12,6 +13,11 @@ await store.initialize();
 await activations.initialize();
 const app = createApp({
   store,
+  ...(process.env.OPENQUICK_PRO_PAYMENTS === "true" ? { proPayments: new ProPayments({
+    root: boot.dataDir, recipient: process.env.OPENQUICK_PRO_RECIPIENT as `0x${string}`,
+    secret: process.env.OPENQUICK_PRO_SECRET ?? "", baseUrl: boot.baseUrl ?? "",
+    actors: (process.env.OPENQUICK_PRO_ACTORS ?? "operator").split(",").map((value) => value.trim()),
+  }, store) } : {}),
   activations,
   adminToken: boot.adminToken,
   production: boot.production,

@@ -1,0 +1,27 @@
+// Testnet only. Never consumes live money or prints payer keys/deploy credentials.
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { createPublicClient, erc20Abi, http } from 'viem';
+import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
+import { tempoModerato } from 'viem/chains';
+import { Actions } from 'viem/tempo';
+import { Mppx, tempo } from 'mppx/client';
+const base = process.env.OPENQUICK_SMOKE_URL ?? 'http://127.0.0.1:4336';
+const key = process.env.OPENQUICK_SMOKE_TOKEN;
+assert.ok(key, 'Supply a private deploy credential');
+const response = await fetch(`${base}/api/v1/pro-deploys`, { method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json', 'idempotency-key': randomUUID() }, body: JSON.stringify({ files: [{ path: 'index.html', content: Buffer.from('<!doctype html><html><head><title>OpenQuick paid deployment</title></head><body><h1>Paid publishing works.</h1><p>This release was published after a verified MPP payment to the OpenQuick Space wallet on Tempo testnet.</p></body></html>').toString('base64') }] }) });
+const order = await response.json(); assert.equal(response.status,201,JSON.stringify(order));
+assert.equal(order.network,'tempo-testnet'); assert.equal(order.testMode,true); assert.equal(order.amount,'0.01');
+const url = new URL(order.paymentUrl); assert.equal(url.origin,new URL(base).origin);
+assert.equal((await fetch(order.paymentUrl)).status,402);
+const rpc = createPublicClient({ chain: tempoModerato, transport: http(undefined,{timeout:20_000,retryCount:1}) });
+const balance = () => rpc.readContract({address:'0x20c0000000000000000000000000000000000000',abi:erc20Abi,functionName:'balanceOf',args:[order.recipient]});
+const before = await balance();
+const payer = privateKeyToAccount(generatePrivateKey());
+await Actions.faucet.fundSync(rpc,{account:payer.address,timeout:30_000});
+const client=Mppx.create({polyfill:false, methods:[tempo.charge({account:payer,expectedChainId:42431,expectedRecipients:[order.recipient],getClient:()=>rpc})], onChallenge: async (challenge,{createCredential})=>{assert.equal(challenge.request.amount,'10000');assert.equal(challenge.request.currency.toLowerCase(),'0x20c0000000000000000000000000000000000000');return createCredential();}});
+const paid = await client.fetch(order.paymentUrl); const published=await paid.json(); assert.equal(paid.status,200,JSON.stringify(published)); assert.equal(published.status,'published'); assert.ok(paid.headers.get('payment-receipt'));
+assert.match(await (await fetch(published.releaseUrl)).text(),/Paid publishing works/);
+const replay=await (await client.fetch(order.paymentUrl)).json(); assert.equal(replay.site.releaseId,published.site.releaseId);
+assert.equal(await balance()-before,10000n,'Expected one payment only');
+console.log(JSON.stringify({result:'passed',network:order.network,recipient:order.recipient,received_atomic:'10000',paymentId:order.id,checkoutUrl:order.checkoutUrl,releaseUrl:published.releaseUrl,transaction:published.transaction,retryChargedAgain:false},null,2));

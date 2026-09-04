@@ -1,3 +1,4 @@
+import { proPaths } from "./pro-api-description.js";
 const version = "0.1.0";
 
 export function llmsTxt(baseUrl: string): string {
@@ -218,6 +219,7 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
     },
     servers: [{ url: baseUrl }],
     paths: {
+      ...proPaths,
       "/healthz": {
         get: {
           operationId: "getHealth",
