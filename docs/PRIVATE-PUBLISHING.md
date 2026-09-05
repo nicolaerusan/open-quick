@@ -1,10 +1,11 @@
 # Private publishing pilot
 
-Status: implementation branch, **not deployed**. Commons Host authentication,
-the private project screen, isolated browser delivery, and testnet payment through
-the Commons proxy are implemented. Renewal, human wallet setup, and deployment
-remain in progress. Keep `OPENQUICK_PRIVATE_PUBLISHING` unset in production until
-the rollout gates pass.
+Status: **Host-only testnet beta deployed on 2026-09-05**. Commons Host
+authentication, the private project screen, isolated browser delivery and testnet
+payment are live. The production purchase and protected project have been verified.
+Commons also supports separately gated human Tempo mainnet receiving setup;
+OpenQuick charges still use test funds. The personal wallet approval, recovery
+and withdrawal rehearsal remains pending, as does hosting renewal.
 
 ## Product and current API
 
@@ -45,6 +46,29 @@ audience. Changing the audience later does not invalidate purchase retries.
 Confirmed payments survive restart, and retrying the order neither charges again
 nor extends the original term. Ambiguous settlement fails closed for reconciliation.
 Do not create a new purchase key to retry an uncertain payment.
+
+### Durable quote terms
+
+New orders store a versioned quote: product, atomic amount, token/address,
+decimals, currency, network, chain ID and hosting term. The existing order also
+fixes the owner, recipient, content hash, initial input fingerprint, expiry and
+idempotency-derived ID. Challenges, displayed prices and fulfillment use that
+saved quote. A later deployment's defaults cannot change an existing order's
+price or shorten its hosting term. This revision keeps the production price at
+0.01 test pathUSD for 30 days and adds no public pricing configuration.
+
+Orders from the original pilot have no quote object. They retain explicitly
+defined legacy terms (0.01 pathUSD, Tempo testnet, 30-day private hosting) regardless
+of current defaults. Reading them does not rewrite the volume; their next state
+transition saves those terms. Malformed explicit quotes, unsupported versions,
+unknown assets/chains and invalid amounts/terms are rejected before payment.
+The browser reviews the stored quote and refuses unsupported pilot terms before
+asking the wallet to sign.
+
+Deploy the OpenQuick quote response before the stricter Commons checkout, which
+requires version 1 metadata even for a legacy purchase. Keep both payment flags
+off if rolling back to code that cannot honor stored terms. Preserve the volume,
+secrets and receipts; do not use a rollback to reinterpret a paid contract.
 
 ## Commons browser flow and isolation
 
@@ -157,6 +181,21 @@ through Commons with real testnet tokens, opens the private tab, and verifies
 the Space's on-chain balance and access gates. It does not exercise an actual
 human passkey or external wallet approval.
 
-Remaining: durable immutable price/network/term fields before configurable live
-pricing, renewals, human production-wallet proof/setup, withdrawal rehearsal,
-reviewed PRs, production deployment, and a production-hosted testnet payment.
+Production baseline: commit `35314ebe2f7b1c0ce5f28722f1e12773cd50eef7`, deployment
+`3b5ac2a5-d886-419c-a922-2ac0a2826a88`, and transaction
+`0x731103102638f88eb7f1ab505577e94ece3e82d417e63427d6aeec494a5e6ea8`.
+Project `oq-private-2e18943a0d22c2144b5c4534` remains private and hosted through
+`2026-10-05T13:49:19.322Z`. Commons' balance is 0.02 test pathUSD, including the
+earlier public Pro pilot. These are test tokens, not revenue.
+
+The quote revision passed 95 tests, including real Chromium origin/permission
+checks, typecheck and build. The combined Commons production-build rehearsal
+passed with transaction `0x6fc4ae7b53d08444ee9beb358eec5acc799e084774d04f2405a87ace95911ac9`,
+10000 atomic pathUSD received, one charge despite a lost reply, private browser
+delivery and the Space balance. The separate browser tests reject changed term,
+visibility, quote version, token or chain before signing. This is automated
+testnet evidence, not a human approval or mainnet transfer.
+
+Remaining: renewals and the actual human production-browser/passkey, independent
+recovery and withdrawal rehearsal. See the current
+[Commons production walkthrough](https://github.com/nicolaerusan/spaces/blob/main/docs/SPACE-PAYMENTS-PRODUCTION.md).

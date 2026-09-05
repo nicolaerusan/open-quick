@@ -1,10 +1,13 @@
 const json = (schema: object) => ({ content: { "application/json": { schema } } });
 const string = { type: "string" };
 const order = {
-  type: "object", required: ["id", "status", "amount", "currency", "network", "testMode", "recipient", "contentHash", "paymentUrl", "checkoutUrl", "expiresAt"],
+  type: "object", required: ["id", "status", "amount", "amountAtomic", "quoteVersion", "token", "chainId", "currency", "network", "testMode", "recipient", "contentHash", "paymentUrl", "checkoutUrl", "expiresAt"],
   properties: {
     id: { type: "string", pattern: "^[a-f0-9]{48}$" }, status: { enum: ["pending", "paid", "published", "needs_review"] },
-    product: string, amount: { const: "0.01" }, currency: { const: "pathUSD" }, network: { const: "tempo-testnet" }, testMode: { const: true },
+    product: string, amount: { type: "string", description: "Price saved with this quote; current pilot default is 0.01" },
+    amountAtomic: { type: "string", pattern: "^[1-9][0-9]{0,8}$" }, quoteVersion: { const: 1 },
+    token: { const: "0x20c0000000000000000000000000000000000000" }, chainId: { const: 42431 },
+    currency: { const: "pathUSD" }, network: { const: "tempo-testnet" }, testMode: { const: true },
     recipient: string, contentHash: string, paymentUrl: string, checkoutUrl: string, expiresAt: string,
     transaction: string, url: string, releaseUrl: string, site: { $ref: "#/components/schemas/SiteRecord" },
   },

@@ -49,6 +49,9 @@ test("authenticates creation, validates before charging, binds retry key to cont
   const parsed = Challenge.deserialize(challenge.headers.get("www-authenticate")!);
   assert.equal(parsed.request.amount, "10000");
   assert.equal(parsed.request.recipient, f.config.recipient);
+  assert.equal(order.quoteVersion, 1); assert.equal(order.amountAtomic, "10000");
+  assert.equal(f.pro.read(order.id).quote.product, "public-release");
+  assert.equal(f.pro.read(order.id).quote.termDays, 0);
   assert.equal(f.count(), 0);
 });
 test("publishes once after confirmation, persists retry across restart, protects paid release", async () => {

@@ -23,8 +23,12 @@ processing → paid → published. A process interrupted during settlement leave
 processing and refuses another payment until operator reconciliation. Paid orders
 can resume publication without charging again. Once published, uploaded staging
 content is removed from the order and retries return the same release. Pro slugs
-cannot be modified through the ordinary deploy/rollback routes. Prices are fixed
-for this pilot; configuration changes require draining pending intents first.
+cannot be modified through the ordinary deploy/rollback routes. Each order now
+stores a versioned price/asset/network/product quote. Existing orders retain
+their saved terms across restarts and default changes; original pre-versioning
+orders retain their known 0.01 test pathUSD terms. Unknown or malformed quote
+versions fail closed before payment. Changing the configured receiver makes old
+unpaid intents unpayable instead of silently sending their funds elsewhere.
 
 Configuration, via Railway secret variables:
 

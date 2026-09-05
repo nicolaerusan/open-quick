@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -129,4 +129,58 @@ test("unknown settlement never exposes files and refuses a second payment", asyn
   assert.equal((await f.pay(order.id)).status, 503);
   assert.equal((await f.app.request(`/api/v1/private-payments/${order.id}/pay`, { headers: f.auth("operator") })).status, 409);
   assert.equal(f.count(), 1); assert.equal((await f.privateStore.list()).length, 0);
+});
+
+test("persists quoted terms and honors them after new deployment defaults change", async () => {
+  const f = await setup(); const original = await (await f.create()).json();
+  const disk = JSON.parse(await readFile(join(f.privateRoot, "pro-orders", `${original.id}.json`), "utf8"));
+  assert.deepEqual(disk.quote, { version: 1, product: "private-hosting", amountAtomic: "10000", decimals: 6,
+    currency: "pathUSD", token: "0x20c0000000000000000000000000000000000000", network: "tempo-testnet", chainId: 42431, termDays: 30 });
+  const restarted = new ProPayments({ ...f.config, quote: { amountAtomic: "25000", termDays: 7 } }, f.privateStore, f.verifier);
+  const retried = await restarted.create("operator", "private-purchase-one", files, { name: "Client proposal", viewers: ["viewer"] });
+  assert.equal(retried.id, original.id); assert.equal(retried.amount, "0.01"); assert.equal(retried.termDays, 30);
+  const updated = await restarted.create("operator", "new-deployment-quote", files, { name: "New terms", viewers: [] });
+  assert.equal(updated.amount, "0.025"); assert.equal(updated.termDays, 7);
+  for (const [order, expectedAtomic, days] of [[original, "10000", 30], [updated, "25000", 7]] as const) {
+    const response = await restarted.pay(order.id, new Request(order.paymentUrl));
+    const challenge = Challenge.deserialize(response.headers.get("www-authenticate")!);
+    assert.equal(challenge.request.amount, expectedAtomic); assert.equal(challenge.request.externalId, order.id);
+    assert.equal(challenge.request.recipient, order.recipient);
+    const proof = Credential.serialize({ challenge, payload: { type: "transaction", signature: "mock" } });
+    const receipt = await (await restarted.pay(order.id, new Request(order.paymentUrl, { headers: { authorization: proof } }))).json();
+    assert.equal(receipt.amountAtomic, expectedAtomic); assert.equal(receipt.termDays, days);
+    assert.equal(Date.parse(receipt.hostingUntil) - Date.parse(receipt.site.createdAt), days * 86400_000);
+    const again = await (await new ProPayments(f.config, f.privateStore, f.verifier).pay(order.id, new Request(order.paymentUrl))).json();
+    assert.equal(again.hostingUntil, receipt.hostingUntil); assert.equal(again.amountAtomic, expectedAtomic);
+  }
+  assert.equal(f.count(), 2);
+});
+
+test("legacy purchases retain their original terms and persist them on the next state transition", async () => {
+  const f = await setup(); const order = await (await f.create()).json();
+  const path = join(f.privateRoot, "pro-orders", `${order.id}.json`);
+  const legacy = JSON.parse(await readFile(path, "utf8")); delete legacy.quote;
+  await writeFile(path, JSON.stringify(legacy));
+  const restarted = new ProPayments({ ...f.config, quote: { amountAtomic: "50000", termDays: 3 } }, f.privateStore, f.verifier);
+  assert.equal(restarted.view(restarted.read(order.id)).amount, "0.01");
+  assert.equal(restarted.view(restarted.read(order.id)).termDays, 30);
+  assert.equal(JSON.parse(await readFile(path, "utf8")).quote, undefined, "Reading old receipts must not rewrite them");
+  const published = await (await f.pay(order.id)).json();
+  const persisted = JSON.parse(await readFile(path, "utf8"));
+  assert.equal(persisted.quote.amountAtomic, "10000"); assert.equal(persisted.quote.termDays, 30);
+  assert.equal(persisted.reference, published.transaction);
+  assert.equal(restarted.view(restarted.read(order.id)).hostingUntil, published.hostingUntil);
+});
+
+test("malformed or unsupported stored quotes never fall back to current pricing or ask for payment", async () => {
+  const f = await setup(); const order = await (await f.create()).json();
+  const path = join(f.privateRoot, "pro-orders", `${order.id}.json`); const stored = f.payments.read(order.id);
+  for (const change of [null, { version: 2 }, { network: "tempo-mainnet" }, { chainId: 4217 },
+    { token: "0x1111111111111111111111111111111111111111" }, { currency: "USDC" }, { decimals: 2 },
+    { amountAtomic: "0" }, { amountAtomic: "100000001" }, { amountAtomic: "1.2" },
+    { termDays: 0 }, { termDays: 366 }, { termDays: 1.5 }, { product: "public-release" }, { newTerm: true }]) {
+    await writeFile(path, JSON.stringify({ ...stored, quote: change === null ? null : { ...stored.quote, ...change } }));
+    await assert.rejects(f.payments.pay(order.id, new Request(order.paymentUrl)), { status: 503 });
+    assert.equal(f.count(), 0); assert.equal((await f.privateStore.list()).length, 0);
+  }
 });

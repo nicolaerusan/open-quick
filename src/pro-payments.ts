@@ -7,20 +7,20 @@ import { isAddress } from "viem";
 import type { SiteStorage } from "./storage.js";
 import { prepareFiles } from "./store.js";
 import type { DeployFile, SiteRecord } from "./types.js";
+import { legacyQuote, newQuote, PRO_CURRENCY, quoteAmount, quoteTermMs, validateQuote, type ProQuote, type QuoteDefaults } from "./pro-quote.js";
+export { PRO_AMOUNT, PRO_CURRENCY, PRIVATE_HOSTING_TERM_MS } from "./pro-quote.js";
 
 const hash = (input: string) => createHash("sha256").update(input).digest("hex");
-export const PRO_AMOUNT = "0.01";
-export const PRIVATE_HOSTING_TERM_MS = 30 * 24 * 60 * 60 * 1000;
-export const PRO_CURRENCY = "0x20c0000000000000000000000000000000000000";
 export class ProError extends Error { constructor(readonly status: number, message: string) { super(message); } }
 export type ProOrder = {
+  quote: ProQuote;
   recipient: string; id: string; actor: string; contentHash: string; slug: string; createdAt: string; expiresAt: string;
   status: "pending" | "processing" | "paid" | "published" | "needs_review";
   files?: DeployFile[]; reference?: string; receipt?: string; site?: SiteRecord;
   privateHosting?: { name: string; viewers: string[]; until?: string; origin?: string };
   fingerprint?: string;
 };
-export type ProConfig = { root: string; recipient: `0x${string}`; secret: string; baseUrl: string; actors: string[]; privateHosting?: boolean; commonsHosts?: boolean; privateOrigins?: string[] };
+export type ProConfig = { root: string; recipient: `0x${string}`; secret: string; baseUrl: string; actors: string[]; privateHosting?: boolean; commonsHosts?: boolean; privateOrigins?: string[]; quote?: QuoteDefaults };
 export type ProVerifier = (order: ProOrder, request: Request) => Promise<Response | { reference: string; receipt: string }>;
 
 /** One process + mounted volume, matching OpenQuick's deployment topology. */
@@ -28,14 +28,16 @@ export class ProPayments {
   private readonly directory: string;
   private tail: Promise<unknown> = Promise.resolve();
   private readonly verify: ProVerifier;
+  private readonly quote: ProQuote;
   constructor(readonly config: ProConfig, private readonly sites: SiteStorage, verifier?: ProVerifier) {
     if (!isAddress(config.recipient) || /^0x0{40}$/i.test(config.recipient) || !/^[a-f0-9]{64}$/i.test(config.secret)) throw Error("Pro payments need a recipient and a 32-byte challenge secret");
     const origin = new URL(config.baseUrl);
     if (origin.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(origin.hostname)) throw Error("Pro payments need an HTTPS origin");
+    this.quote = newQuote(config.privateHosting === true, config.quote);
     this.directory = join(config.root, "pro-orders"); mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     const mppx = Mppx.create({ secretKey: config.secret, realm: "openquick-pro", methods: [tempo.charge({ testnet: true, currency: PRO_CURRENCY, recipient: config.recipient, store: Store.memory(), waitForConfirmation: true })] });
     this.verify = verifier ?? (async (order, request) => {
-      const result = await mppx.charge({ amount: PRO_AMOUNT, description: config.privateHosting ? "OpenQuick: private hosting for 30 days (test)" : "OpenQuick Pro: publish this static release (test)", externalId: order.id, scope: order.id, expires: order.expiresAt, memo: `0x${hash(order.id)}` })(request);
+      const result = await mppx.charge({ amount: quoteAmount(order.quote), description: order.privateHosting ? `OpenQuick: private hosting for ${order.quote.termDays} days (test)` : "OpenQuick Pro: publish this static release (test)", externalId: order.id, scope: order.id, expires: order.expiresAt, memo: `0x${hash(order.id)}` })(request);
       if (result.status === 402) return result.challenge;
       const receipt = result.withReceipt(Response.json({})).headers.get("payment-receipt")!;
       const reference = Receipt.deserialize(receipt).reference;
@@ -60,18 +62,27 @@ export class ProPayments {
   read(id: string): ProOrder {
     const path = this.path(id);
     if (!existsSync(path)) throw new ProError(404, "Payment intent not found");
-    return JSON.parse(readFileSync(path, "utf8")) as ProOrder;
+    const order = JSON.parse(readFileSync(path, "utf8")) as ProOrder;
+    try {
+      // Read-only compatibility for old receipts; the next state save persists
+      // these legacy terms. An explicit malformed quote must not use defaults.
+      order.quote = Object.hasOwn(order, "quote") ? validateQuote(order.quote, !!order.privateHosting) : legacyQuote(!!order.privateHosting);
+      if (!!order.privateHosting !== (this.config.privateHosting === true)) throw Error("Wrong product store");
+    } catch { throw new ProError(503, "Stored payment terms need operator review. Do not pay again."); }
+    return order;
   }
   view(order: ProOrder) {
     const prefix = order.privateHosting ? "/api/v1/private-payments" : "/api/v1/pro-payments";
     const sitePrefix = order.privateHosting ? "/private" : "/sites";
     return { id: order.id, status: order.status === "processing" ? "needs_review" : order.status,
-      product: order.privateHosting ? "OpenQuick private hosting · 30 days" : "OpenQuick Pro deploy", amount: PRO_AMOUNT, currency: "pathUSD", network: "tempo-testnet", testMode: true,
+      product: order.privateHosting ? `OpenQuick private hosting · ${order.quote.termDays} days` : "OpenQuick Pro deploy",
+      amount: quoteAmount(order.quote), amountAtomic: order.quote.amountAtomic, currency: order.quote.currency,
+      network: order.quote.network, chainId: order.quote.chainId, token: order.quote.token, quoteVersion: order.quote.version, testMode: true,
       recipient: order.recipient, contentHash: order.contentHash, expiresAt: order.expiresAt,
       paymentUrl: `${this.config.baseUrl}${prefix}/${order.id}/pay`,
       checkoutUrl: order.privateHosting ? null : `${this.config.baseUrl}/pro/${order.id}`,
       ...(order.privateHosting?.origin ? { browserOrigin: order.privateHosting.origin } : {}),
-      ...(order.privateHosting ? { visibility: "private", name: order.privateHosting.name, owner: order.actor, viewers: order.privateHosting.viewers, hostingUntil: order.privateHosting.until ?? null, termDays: 30 } : {}),
+      ...(order.privateHosting ? { visibility: "private", name: order.privateHosting.name, owner: order.actor, viewers: order.privateHosting.viewers, hostingUntil: order.privateHosting.until ?? null, termDays: order.quote.termDays } : {}),
       ...(order.reference ? { transaction: order.reference } : {}),
       ...(order.site ? { site: order.site, url: `${this.config.baseUrl}${sitePrefix}/${order.site.slug}/`, releaseUrl: `${this.config.baseUrl}${sitePrefix}/${order.site.slug}/releases/${order.site.releaseId}/` } : {}),
     };
@@ -119,7 +130,7 @@ export class ProPayments {
         if (!origin) throw new ProError(429, "Private hosting pilot is at capacity. The operator must add a dedicated project hostname before another purchase.");
         privateHosting.origin = origin;
       }
-      const order: ProOrder = { recipient: this.config.recipient, id, actor, contentHash, fingerprint, slug: `${privateHosting ? "oq-private" : "oq-pro"}-${randomBytes(12).toString("hex")}`, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600_000).toISOString(), status: "pending", files, ...(privateHosting ? { privateHosting } : {}) };
+      const order: ProOrder = { quote: { ...this.quote }, recipient: this.config.recipient, id, actor, contentHash, fingerprint, slug: `${privateHosting ? "oq-private" : "oq-pro"}-${randomBytes(12).toString("hex")}`, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600_000).toISOString(), status: "pending", files, ...(privateHosting ? { privateHosting } : {}) };
       this.save(order); return this.view(order);
     });
   }
@@ -192,7 +203,7 @@ export class ProPayments {
       const existing = await this.sites.site(order.slug).catch(() => null);
       order.site = existing ?? await this.sites.deploy(order.slug, order.files!, order.actor);
       if (order.privateHosting && !order.privateHosting.until) {
-        order.privateHosting.until = new Date(Date.parse(order.site.createdAt) + PRIVATE_HOSTING_TERM_MS).toISOString();
+        order.privateHosting.until = new Date(Date.parse(order.site.createdAt) + quoteTermMs(order.quote)).toISOString();
       }
       order.status = "published"; delete order.files; this.save(order);
       return result();
