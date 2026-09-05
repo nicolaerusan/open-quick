@@ -7,7 +7,7 @@ import { isAddress } from "viem";
 import type { SiteStorage } from "./storage.js";
 import { prepareFiles } from "./store.js";
 import type { DeployFile, SiteRecord } from "./types.js";
-import { legacyQuote, newQuote, PRO_CURRENCY, quoteAmount, quoteTermMs, validateQuote, type ProQuote, type QuoteDefaults } from "./pro-quote.js";
+import { legacyQuote, newQuote, quoteAmount, quoteTermMs, validateQuote, type ProQuote, type QuoteDefaults } from "./pro-quote.js";
 export { PRO_AMOUNT, PRO_CURRENCY, PRIVATE_HOSTING_TERM_MS } from "./pro-quote.js";
 
 const hash = (input: string) => createHash("sha256").update(input).digest("hex");
@@ -20,7 +20,7 @@ export type ProOrder = {
   privateHosting?: { name: string; viewers: string[]; until?: string; origin?: string };
   fingerprint?: string;
 };
-export type ProConfig = { root: string; recipient: `0x${string}`; secret: string; baseUrl: string; actors: string[]; privateHosting?: boolean; commonsHosts?: boolean; privateOrigins?: string[]; quote?: QuoteDefaults };
+export type ProConfig = { root: string; recipient: `0x${string}`; mainnetRecipient?: `0x${string}`; mainnetPayments?: boolean; secret: string; baseUrl: string; actors: string[]; privateHosting?: boolean; commonsHosts?: boolean; privateOrigins?: string[]; quote?: QuoteDefaults };
 export type ProVerifier = (order: ProOrder, request: Request) => Promise<Response | { reference: string; receipt: string }>;
 
 /** One process + mounted volume, matching OpenQuick's deployment topology. */
@@ -33,17 +33,32 @@ export class ProPayments {
     if (!isAddress(config.recipient) || /^0x0{40}$/i.test(config.recipient) || !/^[a-f0-9]{64}$/i.test(config.secret)) throw Error("Pro payments need a recipient and a 32-byte challenge secret");
     const origin = new URL(config.baseUrl);
     if (origin.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(origin.hostname)) throw Error("Pro payments need an HTTPS origin");
-    this.quote = newQuote(config.privateHosting === true, config.quote);
+    if (config.mainnetRecipient && (!isAddress(config.mainnetRecipient) || /^0x0{40}$/i.test(config.mainnetRecipient))) throw Error("Invalid mainnet recipient");
+    if (config.mainnetPayments && (!config.mainnetRecipient || !config.privateHosting)) throw Error("Mainnet Pro needs its own receiving address and private hosting product");
+    if (config.quote?.network === "tempo-mainnet" && !config.mainnetPayments) throw Error("Mainnet charging is disabled");
+    this.quote = newQuote(config.privateHosting === true, { ...config.quote, network: config.mainnetPayments ? "tempo-mainnet" : "tempo-testnet" });
     this.directory = join(config.root, "pro-orders"); mkdirSync(this.directory, { recursive: true, mode: 0o700 });
-    const mppx = Mppx.create({ secretKey: config.secret, realm: "openquick-pro", methods: [tempo.charge({ testnet: true, currency: PRO_CURRENCY, recipient: config.recipient, store: Store.memory(), waitForConfirmation: true })] });
+    const replayStore = Store.memory();
     this.verify = verifier ?? (async (order, request) => {
-      const result = await mppx.charge({ amount: quoteAmount(order.quote), description: order.privateHosting ? `OpenQuick: private hosting for ${order.quote.termDays} days (test)` : "OpenQuick Pro: publish this static release (test)", externalId: order.id, scope: order.id, expires: order.expiresAt, memo: `0x${hash(order.id)}` })(request);
+      // Settlement is bound to stored terms. Enabling mainnet must not turn a
+      // pending test purchase into a real charge or change a prior payee.
+      const testnet = order.quote.network === "tempo-testnet";
+      const mppx = Mppx.create({ secretKey: config.secret, realm: "openquick-pro", methods: [tempo.charge({ testnet, currency: order.quote.token, recipient: order.recipient as `0x${string}`, store: replayStore, waitForConfirmation: true })] });
+      const result = await mppx.charge({ amount: quoteAmount(order.quote), description: order.privateHosting ? `OpenQuick Pro: private hosting for ${order.quote.termDays} days${testnet ? " (test)" : ""}` : "OpenQuick Pro: publish this static release (test)", externalId: order.id, scope: order.id, expires: order.expiresAt, memo: `0x${hash(order.id)}` })(request);
       if (result.status === 402) return result.challenge;
       const receipt = result.withReceipt(Response.json({})).headers.get("payment-receipt")!;
       const reference = Receipt.deserialize(receipt).reference;
       if (!reference || !/^0x[a-f0-9]{64}$/i.test(reference)) throw Error("Missing transaction receipt");
       return { reference: reference.toLowerCase(), receipt };
     });
+  }
+  private recipient(network: ProQuote["network"]) {
+    const recipient = network === "tempo-mainnet" ? this.config.mainnetRecipient : this.config.recipient;
+    if (!recipient) throw new ProError(503, "The receiving account needs operator configuration");
+    return recipient;
+  }
+  offer() {
+    return { ...this.quote, amount: quoteAmount(this.quote), recipient: this.recipient(this.quote.network), testMode: this.quote.network === "tempo-testnet" };
   }
   private lock<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.tail.then(fn); this.tail = run.catch(() => undefined); return run;
@@ -77,7 +92,7 @@ export class ProPayments {
     return { id: order.id, status: order.status === "processing" ? "needs_review" : order.status,
       product: order.privateHosting ? `OpenQuick private hosting · ${order.quote.termDays} days` : "OpenQuick Pro deploy",
       amount: quoteAmount(order.quote), amountAtomic: order.quote.amountAtomic, currency: order.quote.currency,
-      network: order.quote.network, chainId: order.quote.chainId, token: order.quote.token, quoteVersion: order.quote.version, testMode: true,
+      network: order.quote.network, chainId: order.quote.chainId, token: order.quote.token, quoteVersion: order.quote.version, testMode: order.quote.network === "tempo-testnet",
       recipient: order.recipient, contentHash: order.contentHash, expiresAt: order.expiresAt,
       paymentUrl: `${this.config.baseUrl}${prefix}/${order.id}/pay`,
       checkoutUrl: order.privateHosting ? null : `${this.config.baseUrl}/pro/${order.id}`,
@@ -130,7 +145,7 @@ export class ProPayments {
         if (!origin) throw new ProError(429, "Private hosting pilot is at capacity. The operator must add a dedicated project hostname before another purchase.");
         privateHosting.origin = origin;
       }
-      const order: ProOrder = { quote: { ...this.quote }, recipient: this.config.recipient, id, actor, contentHash, fingerprint, slug: `${privateHosting ? "oq-private" : "oq-pro"}-${randomBytes(12).toString("hex")}`, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600_000).toISOString(), status: "pending", files, ...(privateHosting ? { privateHosting } : {}) };
+      const order: ProOrder = { quote: { ...this.quote }, recipient: this.recipient(this.quote.network), id, actor, contentHash, fingerprint, slug: `${privateHosting ? "oq-private" : "oq-pro"}-${randomBytes(12).toString("hex")}`, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600_000).toISOString(), status: "pending", files, ...(privateHosting ? { privateHosting } : {}) };
       this.save(order); return this.view(order);
     });
   }
@@ -173,7 +188,8 @@ export class ProPayments {
       if (order.status === "published") return result();
       if (order.status === "processing" || order.status === "needs_review") throw new ProError(409, "Payment outcome needs operator review. Do not pay again.");
       if (order.status === "pending") {
-        if (order.recipient.toLowerCase() !== this.config.recipient.toLowerCase()) throw new ProError(409, "The receiving account changed. This unpaid intent is no longer payable.");
+        if (order.quote.network === "tempo-mainnet" && !this.config.mainnetPayments) throw new ProError(409, "Mainnet charging is paused. No payment was requested.");
+        if (order.recipient.toLowerCase() !== this.recipient(order.quote.network).toLowerCase()) throw new ProError(409, "The receiving account changed. This unpaid intent is no longer payable.");
         if (Date.parse(order.expiresAt) <= Date.now()) throw new ProError(410, "Intent expired. No payment was requested.");
         const proof = request.headers.get("payment-authorization") ?? request.headers.get("authorization");
         if (!proof) {

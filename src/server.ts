@@ -23,8 +23,11 @@ if (process.env.OPENQUICK_PRIVATE_PUBLISHING === "true") {
   if (!/^[a-f0-9]{64}$/i.test(secret)) throw Error("Private hosting needs the persistent payment challenge secret");
   const bridge = process.env.OPENQUICK_COMMONS_ORIGIN && process.env.OPENQUICK_PRIVATE_ORIGINS
     ? commonsPublishingBridge(process.env.OPENQUICK_COMMONS_ORIGIN, process.env.OPENQUICK_PRIVATE_ORIGINS.split(",").map((v) => v.trim()).filter(Boolean), boot.baseUrl ?? "") : undefined;
-  privatePublishing = { store: privateStore, ...(bridge ? { bridge } : {}), payments: new ProPayments({
+  privatePublishing = { store: privateStore, ...(bridge ? { bridge } : {}),
+    ...(process.env.OPENQUICK_PRO_CHECKOUT_ORIGIN ? { checkoutOrigin: process.env.OPENQUICK_PRO_CHECKOUT_ORIGIN } : {}), payments: new ProPayments({
     root, recipient: process.env.OPENQUICK_PRO_RECIPIENT as `0x${string}`,
+    mainnetPayments: process.env.OPENQUICK_PRIVATE_MAINNET_PAYMENTS === "true",
+    ...(process.env.OPENQUICK_MAINNET_RECIPIENT ? { mainnetRecipient: process.env.OPENQUICK_MAINNET_RECIPIENT as `0x${string}` } : {}),
     secret: createHmac("sha256", Buffer.from(secret, "hex")).update("openquick-private-hosting-v1").digest("hex"),
     baseUrl: boot.baseUrl ?? "", privateHosting: true, commonsHosts: !!bridge,
     ...(bridge ? { privateOrigins: bridge.privateOrigins } : {}),

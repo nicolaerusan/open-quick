@@ -4,8 +4,9 @@ import type { SiteStorage } from "./storage.js";
 import type { PublicActor } from "./auth-gate.js";
 import type { DeployFile } from "./types.js";
 import type { PublishingBridge } from "./commons-publishing.js";
+import { proSessionIdentity } from "./pro-session.js";
 
-export type PrivatePublishing = { payments: ProPayments; store: SiteStorage; bridge?: PublishingBridge };
+export type PrivatePublishing = { payments: ProPayments; store: SiteStorage; bridge?: PublishingBridge; checkoutOrigin?: string };
 type Env = { Variables: { actor: string } };
 
 /** Read the actual stream: Content-Length may be absent or incorrect. */
@@ -49,6 +50,11 @@ export function privatePublishingRoutes(
     if (authorization.startsWith("Publishing ")) {
       const identity = await publishing.bridge?.verify(authorization.slice(11));
       actor = identity?.purpose === "api" ? { handle: identity.actor } : null;
+    } else if (!authorization && (!c.req.header("authorization") || c.req.header("authorization")!.startsWith("Payment "))) {
+      // MPP's Authorization header proves payment, not application identity.
+      // Keep the checkout session on the proof-bearing retry. An explicit
+      // application credential must never fall back to the session cookie.
+      actor = await proSessionIdentity(c.req.raw, publishing.bridge, publishing.checkoutOrigin);
     } else {
       actor = await authenticate(c.req.raw);
       // Only the validated Commons bridge may assert a Commons identity.
@@ -73,7 +79,7 @@ export function privatePublishingRoutes(
       } catch (error) { if (!(error instanceof ProError)) throw error; }
     }
     const purchases = publishing!.payments.privateOrders().filter((order) => order.actor === actor).map((order) => publishing!.payments.view(order));
-    return c.json({ actor, projects, purchases });
+    return c.json({ actor, projects, purchases, offer: publishing!.payments.offer(), checkoutEnabled: !!publishing!.checkoutOrigin });
   });
   app.get("/api/v1/private-payments/:id", (c) => {
     const order = publishing!.payments.authorizeOrder(c.req.param("id"), c.get("actor"));

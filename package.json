@@ -11,7 +11,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && esbuild src/pro-client.ts --bundle --format=esm --platform=browser --minify --outfile=dist/pro-client.js",
+    "build": "tsc -p tsconfig.json && esbuild src/pro-client.ts src/pro-hosting-client.ts --bundle --format=esm --platform=browser --minify --outdir=dist",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.19.2",
+    "accounts": "0.18.4",
     "hono": "^4.9.6",
     "mime": "^4.1.0",
     "mppx": "^0.9.2",

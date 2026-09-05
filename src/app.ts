@@ -1,6 +1,8 @@
 import { ProPayments, ProError } from "./pro-payments.js";
 import { paymentOnlyRequest, privateBrowserRoutes, privatePublishingRoutes, type PrivatePublishing } from "./private-publishing.js";
 import { proPage } from "./pro-page.js";
+import { proHostingRoutes } from "./pro-hosting.js";
+import { publishingOrigin } from "./commons-publishing.js";
 import { readFile } from "node:fs/promises";
 import crypto from "node:crypto";
 import { Hono } from "hono";
@@ -223,10 +225,34 @@ type AppEnv = { Variables: { deployActor: PublicActor } };
 
 export function createApp(options: AppOptions): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
+  const pilotIdentity = async (request: Request) => {
+    const authorization = request.headers.get("x-openquick-authorization") ?? request.headers.get("authorization") ?? undefined;
+    const gated = await gateConsoleWrite(options, authorization);
+    return gated.ok ? gated.actor : null;
+  };
+  const privateRoutes = privatePublishingRoutes(options.privatePublishing, pilotIdentity);
+  const checkoutOrigin = options.privatePublishing?.checkoutOrigin;
+  const checkout = new Hono();
+  checkout.use(async (c, next) => {
+    c.header("cache-control", "private, no-store"); c.header("referrer-policy", "no-referrer");
+    c.header("x-content-type-options", "nosniff"); c.header("x-robots-tag", "noindex, nofollow, noarchive");
+    return next();
+  });
+  if (checkoutOrigin) {
+    const origin = publishingOrigin(checkoutOrigin);
+    const bridge = options.privatePublishing!.bridge;
+    const others = [options.privatePublishing!.payments.config.baseUrl, ...(bridge ? [bridge.commonsOrigin, ...bridge.privateOrigins] : [])];
+    if (!bridge || origin !== checkoutOrigin || others.some(other => new URL(other).hostname === new URL(origin).hostname)) throw Error("Pro checkout needs its own hostname, separate from Commons and all hosted content");
+    const routes = proHostingRoutes(options.privatePublishing);
+    for (const path of ["/pro/hosting", "/pro/hosting/*", "/pro/hosting-client.js"]) checkout.all(path, c => routes.fetch(c.req.raw));
+    for (const path of ["/api/v1/private-projects", "/api/v1/private-projects/*", "/api/v1/private-payments/*"]) checkout.all(path, c => privateRoutes.fetch(c.req.raw));
+    checkout.all("*", c => c.json({ error: "Not found" }, 404));
+  }
   const privateBrowser = options.privatePublishing?.bridge ? privateBrowserRoutes(options.privatePublishing) : undefined;
   app.use(async (c, next) => {
     // Railway terminates TLS before Node. Route by the configured hostname,
     // not Node's internal HTTP scheme or an untrusted forwarded-proto header.
+    if (checkoutOrigin && new URL(c.req.url).hostname === new URL(checkoutOrigin).hostname) return checkout.fetch(c.req.raw);
     if (privateBrowser && options.privatePublishing!.bridge!.privateOrigins.some((origin) => new URL(c.req.url).hostname === new URL(origin).hostname)) return privateBrowser.fetch(c.req.raw);
     return next();
   });
@@ -250,12 +276,6 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     return next();
   });
 
-  const pilotIdentity = async (request: Request) => {
-    const authorization = request.headers.get("x-openquick-authorization") ?? request.headers.get("authorization") ?? undefined;
-    const gated = await gateConsoleWrite(options, authorization);
-    return gated.ok ? gated.actor : null;
-  };
-  const privateRoutes = privatePublishingRoutes(options.privatePublishing, pilotIdentity);
   for (const path of ["/api/v1/private-projects", "/api/v1/private-projects/*", "/api/v1/private-payments/*", "/private/*"]) {
     app.all(path, (c) => privateRoutes.fetch(c.req.raw));
   }
