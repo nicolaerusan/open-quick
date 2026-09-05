@@ -47,7 +47,9 @@ export async function payHostingOrder(order: HostingOrder, payer: Address, walle
   const url = `/api/v1/private-payments/${order.id}/pay`;
   if (order.status === "paid" || order.status === "published") return fetch(url, { cache: "no-store" });
   const parameters = wallet.getMppxParameters();
-  const client = Mppx.create({ polyfill: false, maxPaymentRetries: 1, methods: [tempo.charge({ ...parameters,
+  // The SDK exposes rawFetch as an object method. Native browser fetch must
+  // retain its Window receiver when called through that method.
+  const client = Mppx.create({ polyfill: false, fetch: globalThis.fetch.bind(globalThis), maxPaymentRetries: 1, methods: [tempo.charge({ ...parameters,
     account: payer, mode: "pull", autoSwap: false, expectedChainId: order.chainId, expectedRecipients: [order.recipient],
     getClient: async (options) => {
       const client = await parameters.getClient(options);

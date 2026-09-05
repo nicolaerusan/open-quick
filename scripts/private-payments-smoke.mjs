@@ -19,6 +19,8 @@ import { createApp } from "../dist/app.js";
 let server; let root;
 let base = process.env.OPENQUICK_PRIVATE_SMOKE_URL;
 let credential = process.env.OPENQUICK_PRIVATE_SMOKE_TOKEN;
+const agentHandshake = process.env.OPENQUICK_PRIVATE_SMOKE_AGENT === "true";
+if (agentHandshake && base) throw Error("The simulated agent approval is only allowed on an ephemeral local server");
 const receiver = process.env.OPENQUICK_PRIVATE_SMOKE_RECIPIENT ?? privateKeyToAccount(generatePrivateKey()).address;
 try {
   if (base) {
@@ -33,12 +35,33 @@ try {
     const privateStore = new SiteStore(privateRoot); await privateStore.initialize();
     const activations = new ActivationStore(root); await activations.initialize();
     credential = randomBytes(32).toString("hex");
-    const config = { root: privateRoot, recipient: receiver, secret: randomBytes(32).toString("hex"), baseUrl: "http://127.0.0.1", actors: ["operator"], privateHosting: true };
+    const config = { root: privateRoot, recipient: receiver, secret: randomBytes(32).toString("hex"), baseUrl: "http://127.0.0.1", actors: agentHandshake ? ["operator", "smoke-agent"] : ["operator"], privateHosting: true };
     const app = createApp({ store, activations, adminToken: credential, privatePublishing: { store: privateStore, payments: new ProPayments(config, privateStore) } });
     server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
     if (!server.listening) await new Promise((resolve) => server.once("listening", resolve));
     base = `http://127.0.0.1:${server.address().port}`;
     config.baseUrl = base;
+  }
+  if (agentHandshake) {
+    const post = (path, body) => fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const startedResponse = await post("/api/v1/agent-connections", { handle: "smoke-agent", privateSink: true });
+    assert.equal(startedResponse.status, 201);
+    const started = await startedResponse.json();
+    const pending = await (await post(`/api/v1/agent-connections/${started.id}/poll`, { clientSecret: started.clientSecret })).json();
+    assert.equal(pending.status, "pending"); assert.equal(pending.token, undefined);
+    assert.equal((await fetch(`${base}/api/v1/private-projects`)).status, 404);
+    // Simulate the human step only in this disposable local fixture. Never
+    // approve a production agent connection or emit its private credentials.
+    const approved = await post(`/api/v1/agent-connections/${started.id}/approve`, { approvalCode: started.approvalCode });
+    assert.equal(approved.status, 200); assert.equal((await approved.json()).token, undefined);
+    const poll = await post(`/api/v1/agent-connections/${started.id}/poll`, { clientSecret: started.clientSecret });
+    assert.equal(poll.status, 200);
+    const identity = await poll.json();
+    assert.equal(identity.status, "approved"); assert.equal(identity.handle, "smoke-agent");
+    assert.ok(typeof identity.token === "string" && identity.token.startsWith("oqt_"));
+    credential = identity.token;
+    assert.equal((await post(`/api/v1/agent-connections/${started.id}/poll`, { clientSecret: started.clientSecret })).status, 409);
+    console.log("Local agent handshake passed: pending, human approval, private one-time credential delivery.");
   }
   const headers = { "x-openquick-authorization": `Bearer ${credential}`, "content-type": "application/json" };
   const rpc = createPublicClient({ chain: tempoModerato, transport: http(undefined, { timeout: 20_000, retryCount: 1 }) });
@@ -54,6 +77,7 @@ try {
   const created = await create(); const order = await created.json(); assert.equal(created.status, 201, JSON.stringify(order));
   assert.equal(order.network, "tempo-testnet"); assert.equal(order.testMode, true); assert.equal(order.amount, "0.01");
   assert.equal(order.recipient.toLowerCase(), receiver.toLowerCase()); assert.equal(order.visibility, "private");
+  if (agentHandshake) assert.equal(order.owner, "smoke-agent");
   assert.equal(new URL(order.paymentUrl).origin, base);
   assert.equal((await fetch(order.paymentUrl)).status, 404);
   const client = Mppx.create({ polyfill: false, methods: [tempo.charge({ account: payer, expectedChainId: tempoModerato.id, expectedRecipients: [receiver], getClient: () => rpc })], onChallenge: async (challenge, { createCredential }) => {
@@ -77,7 +101,7 @@ try {
   const update = await fetch(`${base}/api/v1/private-projects/${receipt.site.slug}/deploy`, { method: "POST", headers, body: JSON.stringify({ files: [{ path: "index.html", content: Buffer.from("<h1>Updated within the paid hosting term</h1>").toString("base64") }] }) });
   assert.equal(update.status, 201); assert.match(await (await fetch(receipt.url, { headers })).text(), /Updated within/);
   assert.equal(await balance() - before, 10_000n, "Retry or update charged twice");
-  console.log(JSON.stringify({ result: "passed", target: root ? "ephemeral local HTTP server" : base, network: "tempo-testnet", transaction: receipt.transaction, recipient: receiver, receivedAtomic: "10000", orderId: order.id, project: receipt.site.slug, hostingUntil: receipt.hostingUntil, anonymousDenied: true, assetsProtected: true, publicListingAbsent: true, updateIncluded: true, duplicatePayment: false }, null, 2));
+  console.log(JSON.stringify({ result: "passed", target: root ? "ephemeral local HTTP server" : base, agentHandshake, network: "tempo-testnet", transaction: receipt.transaction, recipient: receiver, receivedAtomic: "10000", orderId: order.id, project: receipt.site.slug, hostingUntil: receipt.hostingUntil, anonymousDenied: true, assetsProtected: true, publicListingAbsent: true, updateIncluded: true, duplicatePayment: false }, null, 2));
 } finally {
   if (server) await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   if (root) await rm(root, { recursive: true, force: true });

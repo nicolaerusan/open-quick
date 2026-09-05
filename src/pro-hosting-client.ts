@@ -55,6 +55,7 @@ function render() {
       }, true));
       else {
         card.append(text("p", `Paying from: ${payer}`, "address"));
+        if (payer.toLowerCase() === order.recipient.toLowerCase()) card.append(text("p", "This is also OpenQuick’s receiving wallet. Choose another funded wallet to test a customer payment."));
         controls.append(action(`Pay ${order.amount} ${order.testMode ? "test " : ""}${order.currency}`, async () => {
           await read(await payHostingOrder(order, payer, wallet!)); await load();
         }, true));
@@ -97,7 +98,7 @@ async function run(work: () => Promise<void>) {
   busy = true; message.textContent = ""; message.classList.remove("success"); message.setAttribute("role", "alert");
   document.querySelectorAll<HTMLButtonElement>("button").forEach(button => button.disabled = true);
   try { await work(); }
-  catch (failure) { message.textContent = failure instanceof Error ? failure.message : "Check this purchase before retrying."; await load().catch(() => {}); }
+  catch (failure) { message.textContent = failure instanceof Error ? failure.message : "Check this purchase before retrying."; await load().catch(() => {}); message.scrollIntoView({ behavior: "smooth", block: "center" }); }
   finally {
     busy = false; document.querySelectorAll<HTMLButtonElement>("button").forEach(button => button.disabled = false);
     review.disabled = files.length === 0; render();
@@ -150,6 +151,8 @@ form.onsubmit = event => {
     const order = await read(await fetch("/api/v1/private-projects", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": key },
       body: JSON.stringify({ name: name.value, files, viewers: viewerHandles() }) }));
     assertHostingOrder(order); await load();
+    inform("Your purchase is ready. Choose a payment wallet below. No payment has been taken.");
+    purchases.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 };
 document.querySelector<HTMLButtonElement>("#refresh")!.onclick = () => void run(load);

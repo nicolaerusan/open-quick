@@ -10,7 +10,7 @@ subscription price. Private files remain limited to 50 files and 1 MB.
 
 1. Open the OpenQuick app and choose **Pro** in the main navigation. The Pro
    offer is visible before sign-in; purchases remain restricted to the Host beta.
-2. **Continue with Commons** uses the existing Commons account to identify the
+2. **Sign in with Commons to purchase Pro** uses the existing Commons account to identify the
    Host, then immediately returns to OpenQuick. It does not visit Space settings.
    OpenQuick binds the callback to a random, short-lived, host-only sign-in cookie.
    Commons posts its purpose-specific ticket to the fixed OpenQuick callback; no
@@ -132,3 +132,26 @@ Before shipping cards:
 
 Card checkout, card payouts, additional crypto methods, automated spending and
 automatic renewal are not implemented by this change.
+
+
+## Browser payment regression and agent rehearsal
+
+The browser payment client explicitly binds its fetch transport to the global
+browser object before passing it to MPP. Calling the native fetch function as
+an unbound SDK object method previously failed with Illegal invocation before
+requesting a payment challenge. A Chromium regression runs the actual payment
+module with native fetch; a separate UI test checks purchase guidance, wallet
+matching notices and visible failures.
+
+The signed-out entry explicitly says Sign in with Commons to purchase Pro.
+Checkout links to Tempo Wallet for balances, brings the saved purchase into
+view after review, and identifies when the selected payer is also the receiver.
+This notice does not prohibit the transfer or change payment terms.
+
+For a disposable agent onboarding and testnet purchase rehearsal, build the app
+and run `OPENQUICK_PRIVATE_SMOKE_AGENT=true node scripts/private-payments-smoke.mjs`.
+This option refuses remote targets. It simulates human approval on a local
+fixture, delivers the agent credential once into process memory, purchases with
+faucet tokens, verifies private delivery and checks retries/updates do not charge
+a second time. It does not onboard a production agent or grant wallet spending
+permission; the service credential and testnet signer are separate.

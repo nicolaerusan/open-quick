@@ -73,7 +73,7 @@ test("native Pro checkout isolates its Host session from public content, stages 
     await page.getByRole("link", { name: "PRO ↗", exact: true }).click();
     await page.waitForURL(`${checkoutOrigin}/pro`);
     await page.screenshot({ path: "/tmp/openquick-pro-entry.png", fullPage: true });
-    await Promise.all([page.waitForURL(`${checkoutOrigin}/pro/hosting`), page.getByRole("button", { name: "Continue with Commons" }).click()]);
+    await Promise.all([page.waitForURL(`${checkoutOrigin}/pro/hosting`), page.getByRole("button", { name: "Sign in with Commons to purchase Pro" }).click()]);
     await page.getByRole("heading", { name: /Publish privately/ }).waitFor();
     const cookie = (await context.cookies()).find(value => value.name === PRO_SESSION_COOKIE)!;
     assert.equal(cookie.domain, "checkout.localhost"); assert.equal(cookie.httpOnly, true); assert.equal(cookie.secure, true);
@@ -108,7 +108,7 @@ test("native Pro checkout isolates its Host session from public content, stages 
     await page.goto(`${publicOrigin}/sites/attacker/`);
     assert.equal(await page.evaluate(async url => { try { return await (await fetch(url, { credentials: "include" })).text(); } catch { return "blocked"; } }, `${checkoutOrigin}/api/v1/private-projects`), "blocked");
     active = false;
-    assert.match(await (await context.request.get(`${checkoutOrigin}/pro/hosting`)).text(), /Continue with Commons/);
+    assert.match(await (await context.request.get(`${checkoutOrigin}/pro/hosting`)).text(), /Sign in with Commons to purchase Pro/);
     assert.equal((await context.request.get(`${checkoutOrigin}/api/v1/private-projects`)).status(), 404);
     assert.equal(payments.privateOrders()[0]!.status, "pending", "Browser test must never pay mainnet money");
     await context.close();
