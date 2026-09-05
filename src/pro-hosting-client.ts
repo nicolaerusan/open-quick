@@ -22,6 +22,7 @@ let orders: HostingOrder[] = [];
 const text = (tag: string, value: string, className?: string) => {
   const node = document.createElement(tag); node.textContent = value; if (className) node.className = className; return node;
 };
+function inform(value: string) { message.setAttribute("role", "status"); message.classList.add("success"); message.textContent = value; }
 function action(label: string, work: () => Promise<void>, primary = false) {
   const button = document.createElement("button"); button.textContent = label; button.disabled = busy;
   if (primary) button.className = "primary";
@@ -61,7 +62,7 @@ function render() {
           assertHostingOrder(order);
           const [{ createPublicClient, http }, { tempoModerato }, { Actions }] = await Promise.all([import("viem"), import("viem/chains"), import("viem/tempo")]);
           await Actions.faucet.fundSync(createPublicClient({ chain: tempoModerato, transport: http() }), { account: payer, timeout: 30_000 });
-          message.textContent = "Free test funds added to your buyer wallet.";
+          inform("Free test funds added to your buyer wallet.");
         }));
         controls.append(action("Change wallet", async () => { payers.delete(order.id); render(); }));
       }
@@ -93,7 +94,7 @@ async function load() {
 }
 async function run(work: () => Promise<void>) {
   if (busy) return;
-  busy = true; message.textContent = "";
+  busy = true; message.textContent = ""; message.classList.remove("success"); message.setAttribute("role", "alert");
   document.querySelectorAll<HTMLButtonElement>("button").forEach(button => button.disabled = true);
   try { await work(); }
   catch (failure) { message.textContent = failure instanceof Error ? failure.message : "Check this purchase before retrying."; await load().catch(() => {}); }
@@ -138,13 +139,13 @@ document.querySelector<HTMLButtonElement>("#new-project")!.onclick = () => { sel
 document.querySelector<HTMLButtonElement>("#save-viewers")!.onclick = () => void run(async () => {
   if (!selected?.site) throw Error("Choose a project");
   await read(await fetch(`/api/v1/private-projects/${selected.site.slug}/viewers`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ viewers: viewerHandles() }) }));
-  await load(); message.textContent = "Viewer access updated.";
+  await load(); inform("Viewer access updated.");
 });
 form.onsubmit = event => {
   event.preventDefault(); void run(async () => {
     if (selected?.site) {
       await read(await fetch(`/api/v1/private-projects/${selected.site.slug}/deploy`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ files }) }));
-      await load(); message.textContent = "Project updated. No additional payment."; return;
+      await load(); inform("Project updated. No additional payment."); return;
     }
     const order = await read(await fetch("/api/v1/private-projects", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": key },
       body: JSON.stringify({ name: name.value, files, viewers: viewerHandles() }) }));
