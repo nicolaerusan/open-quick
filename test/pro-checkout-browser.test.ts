@@ -62,6 +62,9 @@ test("native Pro checkout isolates its Host session from public content, stages 
     const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 900 } }); const page = await context.newPage();
     const failures: string[] = []; page.on("pageerror", error => failures.push(error.message));
     await page.goto(publicOrigin);
+    await page.getByRole("link", { name: "OpenQuick home", exact: true }).click();
+    assert.equal(page.url(), `${publicOrigin}/`);
+    await page.screenshot({ path: "/tmp/openquick-home-pro.png", fullPage: true });
     await page.getByRole("link", { name: "PRO ↗", exact: true }).click();
     await page.waitForURL(`${checkoutOrigin}/pro`);
     await page.screenshot({ path: "/tmp/openquick-pro-entry.png", fullPage: true });
