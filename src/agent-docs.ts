@@ -209,7 +209,7 @@ export function agentCard(baseUrl: string): Record<string, unknown> {
   };
 }
 
-export function openApiDocument(baseUrl: string): Record<string, unknown> {
+export function openApiDocument(baseUrl: string, includePro = false): Record<string, unknown> {
   return {
     openapi: "3.1.0",
     info: {
@@ -219,7 +219,7 @@ export function openApiDocument(baseUrl: string): Record<string, unknown> {
     },
     servers: [{ url: baseUrl }],
     paths: {
-      ...proPaths,
+      ...(includePro ? proPaths : {}),
       "/healthz": {
         get: {
           operationId: "getHealth",

@@ -10,14 +10,17 @@ import type { DeployFile, SiteRecord } from "./types.js";
 
 const hash = (input: string) => createHash("sha256").update(input).digest("hex");
 export const PRO_AMOUNT = "0.01";
+export const PRIVATE_HOSTING_TERM_MS = 30 * 24 * 60 * 60 * 1000;
 export const PRO_CURRENCY = "0x20c0000000000000000000000000000000000000";
 export class ProError extends Error { constructor(readonly status: number, message: string) { super(message); } }
 export type ProOrder = {
   recipient: string; id: string; actor: string; contentHash: string; slug: string; createdAt: string; expiresAt: string;
   status: "pending" | "processing" | "paid" | "published" | "needs_review";
   files?: DeployFile[]; reference?: string; receipt?: string; site?: SiteRecord;
+  privateHosting?: { name: string; viewers: string[]; until?: string };
+  fingerprint?: string;
 };
-export type ProConfig = { root: string; recipient: `0x${string}`; secret: string; baseUrl: string; actors: string[] };
+export type ProConfig = { root: string; recipient: `0x${string}`; secret: string; baseUrl: string; actors: string[]; privateHosting?: boolean };
 export type ProVerifier = (order: ProOrder, request: Request) => Promise<Response | { reference: string; receipt: string }>;
 
 /** One process + mounted volume, matching OpenQuick's deployment topology. */
@@ -32,7 +35,7 @@ export class ProPayments {
     this.directory = join(config.root, "pro-orders"); mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     const mppx = Mppx.create({ secretKey: config.secret, realm: "openquick-pro", methods: [tempo.charge({ testnet: true, currency: PRO_CURRENCY, recipient: config.recipient, store: Store.memory(), waitForConfirmation: true })] });
     this.verify = verifier ?? (async (order, request) => {
-      const result = await mppx.charge({ amount: PRO_AMOUNT, description: "OpenQuick Pro: publish this static release (test)", externalId: order.id, scope: order.id, expires: order.expiresAt, memo: `0x${hash(order.id)}` })(request);
+      const result = await mppx.charge({ amount: PRO_AMOUNT, description: config.privateHosting ? "OpenQuick: private hosting for 30 days (test)" : "OpenQuick Pro: publish this static release (test)", externalId: order.id, scope: order.id, expires: order.expiresAt, memo: `0x${hash(order.id)}` })(request);
       if (result.status === 402) return result.challenge;
       const receipt = result.withReceipt(Response.json({})).headers.get("payment-receipt")!;
       const reference = Receipt.deserialize(receipt).reference;
@@ -60,37 +63,86 @@ export class ProPayments {
     return JSON.parse(readFileSync(path, "utf8")) as ProOrder;
   }
   view(order: ProOrder) {
+    const prefix = order.privateHosting ? "/api/v1/private-payments" : "/api/v1/pro-payments";
+    const sitePrefix = order.privateHosting ? "/private" : "/sites";
     return { id: order.id, status: order.status === "processing" ? "needs_review" : order.status,
-      product: "OpenQuick Pro deploy", amount: PRO_AMOUNT, currency: "pathUSD", network: "tempo-testnet", testMode: true,
+      product: order.privateHosting ? "OpenQuick private hosting · 30 days" : "OpenQuick Pro deploy", amount: PRO_AMOUNT, currency: "pathUSD", network: "tempo-testnet", testMode: true,
       recipient: order.recipient, contentHash: order.contentHash, expiresAt: order.expiresAt,
-      paymentUrl: `${this.config.baseUrl}/api/v1/pro-payments/${order.id}/pay`,
+      paymentUrl: `${this.config.baseUrl}${prefix}/${order.id}/pay`,
       checkoutUrl: `${this.config.baseUrl}/pro/${order.id}`,
+      ...(order.privateHosting ? { visibility: "private", name: order.privateHosting.name, owner: order.actor, viewers: order.privateHosting.viewers, hostingUntil: order.privateHosting.until ?? null, termDays: 30 } : {}),
       ...(order.reference ? { transaction: order.reference } : {}),
-      ...(order.site ? { site: order.site, url: `${this.config.baseUrl}/sites/${order.site.slug}/`, releaseUrl: `${this.config.baseUrl}/sites/${order.site.slug}/releases/${order.site.releaseId}/` } : {}),
+      ...(order.site ? { site: order.site, url: `${this.config.baseUrl}${sitePrefix}/${order.site.slug}/`, releaseUrl: `${this.config.baseUrl}${sitePrefix}/${order.site.slug}/releases/${order.site.releaseId}/` } : {}),
     };
   }
-  async create(actor: string, requestKey: string, files: DeployFile[]) {
-    if (!this.config.actors.includes(actor)) throw new ProError(403, "Pro deploy is a private pilot; ask the operator for access");
-    if (!/^[a-zA-Z0-9._:-]{8,128}$/.test(requestKey)) throw new ProError(422, "Supply a stable Idempotency-Key (8–128 characters)");
+  private validateFiles(files: DeployFile[]) {
     const prepared = prepareFiles(files);
     if (prepared.totalBytes > 1_000_000 || files.length > 50) throw new ProError(413, "Pro pilot supports up to 50 files and 1 MB per release");
     const paths = new Set(prepared.files.map((file) => file.path));
+    if (!paths.has("index.html")) throw new ProError(422, "A project needs index.html");
     if (paths.has("_openquick-release.json") || [...paths].some((path) => path.split("/").slice(0, -1).some((_, i, parts) => paths.has(parts.slice(0, i + 1).join("/"))))) throw new ProError(422, "Files conflict with a directory or reserved release metadata");
+  }
+  private validateViewers(viewers: unknown): string[] {
+    if (!Array.isArray(viewers) || viewers.length > 20 || viewers.some((v) => typeof v !== "string" || !this.config.actors.includes(v))) throw new ProError(422, "Choose up to 20 approved pilot identities");
+    return [...new Set(viewers)].sort();
+  }
+  async create(actor: string, requestKey: string, files: DeployFile[], details?: { name: string; viewers: string[] }) {
+    if (!this.config.actors.includes(actor)) throw new ProError(403, "Pro deploy is a private pilot; ask the operator for access");
+    if (!/^[a-zA-Z0-9._:-]{8,128}$/.test(requestKey)) throw new ProError(422, "Supply a stable Idempotency-Key (8–128 characters)");
+    this.validateFiles(files);
+    let privateHosting: ProOrder["privateHosting"];
+    if (this.config.privateHosting) {
+      if (!details || typeof details.name !== "string" || !details.name.trim() || details.name.trim().length > 80) throw new ProError(422, "Name this private project (1–80 characters)");
+      privateHosting = { name: details.name.trim(), viewers: this.validateViewers(details.viewers) };
+    } else if (details) throw new ProError(422, "Private hosting needs its own payment endpoint");
     const contentHash = hash(JSON.stringify(files));
+    const fingerprint = hash(JSON.stringify({ contentHash, privateHosting }));
     // Secret-derived IDs prevent public guessing from an actor and idempotency key.
     const id = hash(`${this.config.secret}:${actor}:${requestKey}`).slice(0, 48);
     return this.lock(async () => {
       if (existsSync(this.path(id))) {
         const existing = this.read(id);
-        if (existing.contentHash !== contentHash) throw new ProError(409, "Idempotency-Key already used for different content");
+        if (existing.contentHash !== contentHash || (existing.fingerprint && existing.fingerprint !== fingerprint)) throw new ProError(409, "Idempotency-Key already used for different content or sharing settings");
         return this.view(existing);
       }
       const all = readdirSync(this.directory).filter((name) => name.endsWith(".json"));
       if (all.length >= 1000) throw new ProError(429, "Pilot intent capacity reached; operator cleanup required");
       const recent = all.map((name) => this.read(name.slice(0, -5))).filter((order) => order.actor === actor && Date.parse(order.createdAt) > Date.now() - 3600_000);
       if (recent.length >= 20) throw new ProError(429, "Pilot limit: 20 new intents per hour");
-      const order: ProOrder = { recipient: this.config.recipient, id, actor, contentHash, slug: `oq-pro-${randomBytes(12).toString("hex")}`, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600_000).toISOString(), status: "pending", files };
+      const order: ProOrder = { recipient: this.config.recipient, id, actor, contentHash, fingerprint, slug: `${privateHosting ? "oq-private" : "oq-pro"}-${randomBytes(12).toString("hex")}`, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600_000).toISOString(), status: "pending", files, ...(privateHosting ? { privateHosting } : {}) };
       this.save(order); return this.view(order);
+    });
+  }
+  /** All private authorization reads durable state, including after a restart. */
+  privateOrders() {
+    if (!this.config.privateHosting) throw new ProError(404, "Not found");
+    return readdirSync(this.directory).filter((name) => name.endsWith(".json")).map((name) => this.read(name.slice(0, -5)));
+  }
+  authorizeOrder(id: string, actor: string) {
+    const order = this.read(id);
+    if (!this.config.actors.includes(actor) || order.actor !== actor) throw new ProError(404, "Not found");
+    return order;
+  }
+  project(slug: string, actor: string, ownerOnly = false) {
+    const order = this.privateOrders().find((entry) => entry.slug === slug && entry.status === "published");
+    if (!order?.privateHosting || !this.config.actors.includes(actor) || (order.actor !== actor && (ownerOnly || !order.privateHosting.viewers.includes(actor)))) throw new ProError(404, "Not found");
+    if (!order.privateHosting.until || Date.parse(order.privateHosting.until) <= Date.now()) throw new ProError(410, "Private hosting has expired");
+    return order;
+  }
+  async updateProject(slug: string, actor: string, files: DeployFile[]) {
+    return this.lock(async () => {
+      this.project(slug, actor, true);
+      this.validateFiles(files);
+      if ((await this.sites.history(slug)).length >= 100) throw new ProError(429, "Pilot limit: 100 releases per private project");
+      return this.sites.deploy(slug, files, actor);
+    });
+  }
+  async shareProject(slug: string, actor: string, viewers: unknown) {
+    return this.lock(async () => {
+      const order = this.project(slug, actor, true);
+      order.privateHosting!.viewers = this.validateViewers(viewers);
+      this.save(order);
+      return this.view(order);
     });
   }
   async pay(id: string, request: Request): Promise<Response> {
@@ -129,6 +181,9 @@ export class ProPayments {
       // private, reserved slug and content are fixed before payment.
       const existing = await this.sites.site(order.slug).catch(() => null);
       order.site = existing ?? await this.sites.deploy(order.slug, order.files!, order.actor);
+      if (order.privateHosting && !order.privateHosting.until) {
+        order.privateHosting.until = new Date(Date.parse(order.site.createdAt) + PRIVATE_HOSTING_TERM_MS).toISOString();
+      }
       order.status = "published"; delete order.files; this.save(order);
       return result();
     });

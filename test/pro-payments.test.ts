@@ -36,7 +36,7 @@ async function setup() {
 }
 test("authenticates creation, validates before charging, binds retry key to content", async () => {
   const f = await setup();
-  assert.equal((await f.create("no-auth-1", files, false)).status, 401);
+  assert.equal((await f.create("no-auth-1", files, false)).status, 404);
   assert.equal((await f.create("bad-file-1", [{ path: "../escape", content: "eA==" }])).status, 422);
   assert.equal((await f.create("bad-file-2", [{ path: "_openquick-release.json", content: "eA==" }])).status, 422);
   assert.equal((await f.create("bad-file-3", [{ path: "a", content: "eA==" }, { path: "a/b", content: "eA==" }])).status, 422);
@@ -44,7 +44,7 @@ test("authenticates creation, validates before charging, binds retry key to cont
   assert.equal((await (await f.create()).json()).id, order.id);
   assert.equal((await f.create("purchase-one", [{ path: "index.html", content: "eA==" }])).status, 409);
   assert.equal((await f.store.list()).length, 0);
-  const challenge = await f.app.request(`/api/v1/pro-payments/${order.id}/pay`);
+  const challenge = await f.app.request(`/api/v1/pro-payments/${order.id}/pay`, { headers: { authorization: "Bearer operator-key" } });
   assert.equal(challenge.status, 402);
   const parsed = Challenge.deserialize(challenge.headers.get("www-authenticate")!);
   assert.equal(parsed.request.amount, "10000");
@@ -80,4 +80,17 @@ test("recovers a paid publication without another payment and refuses expired in
   const other = await (await f.create("purchase-two")).json(); const expired = f.pro.read(other.id); expired.expiresAt = "2000-01-01T00:00:00Z";
   await writeFile(join(f.root, "pro-orders", `${other.id}.json`), JSON.stringify(expired));
   await assert.rejects(f.pro.pay(other.id, new Request(other.paymentUrl)), { status: 410 });
+});
+
+test("an active public-release pilot hides checkout, payment details, and discovery from non-host credentials", async () => {
+  const f = await setup(); const order = await (await f.create()).json();
+  for (const path of ["/pro", `/pro/${order.id}`, `/api/v1/pro-payments/${order.id}`, `/api/v1/pro-payments/${order.id}/pay`]) {
+    for (const headers of [{}, { authorization: "Bearer invalid-key" }]) assert.equal((await f.app.request(path, { headers })).status, 404, path);
+    assert.equal((await f.app.request(path, { headers: { "x-openquick-authorization": "Bearer operator-key" } })).status, path.endsWith("/pay") ? 402 : 200);
+  }
+  const publicSchema = await (await f.app.request("/openapi.json")).json();
+  assert.equal(publicSchema.paths["/api/v1/pro-deploys"], undefined);
+  const privateSchema = await (await f.app.request("/openapi.json", { headers: { authorization: "Bearer operator-key" } })).json();
+  assert.ok(privateSchema.paths["/api/v1/pro-deploys"]);
+  assert.equal(f.count(), 0);
 });

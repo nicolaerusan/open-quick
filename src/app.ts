@@ -1,4 +1,5 @@
 import { ProPayments, ProError } from "./pro-payments.js";
+import { paymentOnlyRequest, privatePublishingRoutes, type PrivatePublishing } from "./private-publishing.js";
 import { proPage } from "./pro-page.js";
 import { readFile } from "node:fs/promises";
 import crypto from "node:crypto";
@@ -16,6 +17,7 @@ import { maybeInjectHostedHtml } from "./powered-by.js";
 type AppOptions = {
   store: SiteStorage;
   proPayments?: ProPayments;
+  privatePublishing?: PrivatePublishing;
   activations: ActivationStore;
   adminToken: string;
   production?: boolean;
@@ -224,7 +226,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   const requestLogger = logger();
   app.use(async (c, next) => {
     // Payment links are private capabilities; keep them out of access logs.
-    if (new URL(c.req.url).pathname.startsWith("/api/v1/pro-payments/") || new URL(c.req.url).pathname.startsWith("/pro/")) return next();
+    if (/^\/(?:api\/v1\/(?:pro-|private-)|pro(?:\/|$)|private(?:\/|$))/.test(new URL(c.req.url).pathname)) return next();
     return requestLogger(c, next);
   });
   app.use(async (c, next) => {
@@ -233,7 +235,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const gated = await gateConsoleWrite(options, c.req.header("authorization"));
     if (!gated.ok) return c.json(gated.body, gated.status);
     const slug = pathname.split("/")[4];
-    if (slug && /^oq-pro-[a-f0-9]{24}$/.test(slug)) return c.json(deployError("scope_denied", "Pro releases are immutable; create a new Pro deploy intent"), 403);
+    if (slug && /^oq-(?:pro|private)-[a-f0-9]{24}$/.test(slug)) return c.json(deployError("scope_denied", "Use the paid project's own API"), 403);
     if (!scopeAllowsSlug(gated.actor.scope, slug)) {
       return c.json(deployError("scope_denied", "Deploy credential is not authorized for this site slug"), 403);
     }
@@ -241,6 +243,29 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     return next();
   });
 
+  const pilotIdentity = async (request: Request) => {
+    const authorization = request.headers.get("x-openquick-authorization") ?? request.headers.get("authorization") ?? undefined;
+    const gated = await gateConsoleWrite(options, authorization);
+    return gated.ok ? gated.actor : null;
+  };
+  const privateRoutes = privatePublishingRoutes(options.privatePublishing, pilotIdentity);
+  for (const path of ["/api/v1/private-projects", "/api/v1/private-projects/*", "/api/v1/private-payments/*", "/private/*"]) {
+    app.all(path, (c) => privateRoutes.fetch(c.req.raw));
+  }
+  app.use(async (c, next) => {
+    if (!/^\/(?:pro(?:\/|$)|pro-client\.js$|api\/v1\/pro-)/.test(c.req.path)) return next();
+    c.header("cache-control", "private, no-store");
+    c.header("referrer-policy", "no-referrer");
+    const actor = await pilotIdentity(c.req.raw);
+    if (!options.proPayments || !actor || actor.scope != null || !options.proPayments.config.actors.includes(actor.handle)) return c.json({ error: "Not found" }, 404);
+    c.set("deployActor", actor);
+    const id = /^\/(?:pro\/|api\/v1\/pro-payments\/)([a-f0-9]{48})(?:\/pay)?$/.exec(c.req.path)?.[1];
+    if (id) {
+      try { options.proPayments.authorizeOrder(id, actor.handle); }
+      catch { return c.json({ error: "Not found" }, 404); }
+    }
+    return next();
+  });
   app.get("/pro", (c) => c.html(proPage()));
   app.get("/pro/:id", (c) => c.html(proPage(c.req.param("id")), 200, { "cache-control": "no-store", "referrer-policy": "no-referrer" }));
   app.get("/pro-client.js", async (c) => c.body(await readFile(new URL("./pro-client.js", import.meta.url), "utf8"), 200, { "content-type": "text/javascript" }));
@@ -248,9 +273,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   app.post("/api/v1/pro-deploys", async (c) => {
     c.header("cache-control", "no-store");
     if (!options.proPayments) return c.json({ error: "Pro payment pilot is disabled" }, 404);
-    const gated = await gateConsoleWrite(options, c.req.header("authorization"));
-    if (!gated.ok) return c.json(gated.body, gated.status);
-    if (gated.actor.scope != null) return c.json({ error: "Scoped credentials cannot create Pro release slugs" }, 403);
+    const actor = c.get("deployActor");
     try {
       // Bound actual streamed bytes, including chunked requests, before JSON parsing.
       const reader = c.req.raw.body?.getReader(); if (!reader) return c.json({ error: "Missing content" }, 422);
@@ -258,7 +281,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       for (;;) { const part = await reader.read(); if (part.done) break; size += part.value.length;
         if (size > 1_500_000) { await reader.cancel(); return c.json({ error: "Pro request exceeds 1.5 MB" }, 413); } chunks.push(part.value); }
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      return c.json(await options.proPayments.create(gated.actor.handle, c.req.header("idempotency-key") ?? "", body.files), 201);
+      return c.json(await options.proPayments.create(actor.handle, c.req.header("idempotency-key") ?? "", body.files), 201);
     } catch (error) { return c.json({ error: error instanceof ProError ? error.message : "Invalid Pro deployment" }, error instanceof ProError ? error.status as 422 : 422); }
   });
   app.get("/api/v1/pro-payments/:id", (c) => {
@@ -269,7 +292,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   app.all("/api/v1/pro-payments/:id/pay", async (c) => {
     if (!["GET", "POST"].includes(c.req.method)) return c.json({ error: "Method not allowed" }, 405);
     if (!options.proPayments) return c.json({ error: "Pro payment pilot is disabled" }, 404);
-    try { return await options.proPayments.pay(c.req.param("id"), c.req.raw); }
+    try { return await options.proPayments.pay(c.req.param("id"), paymentOnlyRequest(c.req.raw)); }
     catch (error) { return c.json({ error: error instanceof ProError ? error.message : "Publication temporarily unavailable; retry this same intent" }, error instanceof ProError ? error.status as 422 : 503); }
   });
   app.get("/healthz", (c) => c.json({ ok: true }));
@@ -297,9 +320,12 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const origin = options.baseUrl || new URL(c.req.url).origin;
     return c.json(agentCard(origin));
   });
-  app.get("/openapi.json", (c) => {
+  app.get("/openapi.json", async (c) => {
     const origin = options.baseUrl || new URL(c.req.url).origin;
-    return c.json(openApiDocument(origin));
+    const actor = await pilotIdentity(c.req.raw);
+    const includePro = !!options.proPayments && !!actor && actor.scope == null && options.proPayments.config.actors.includes(actor.handle);
+    c.header("cache-control", "private, no-store");
+    return c.json(openApiDocument(origin, includePro));
   });
   app.get("/join", (c) => {
     const origin = options.baseUrl || new URL(c.req.url).origin;

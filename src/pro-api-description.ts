@@ -15,18 +15,18 @@ const id = [{ in: "path", name: "id", required: true, schema: { type: "string", 
 export const proPaths = {
   "/api/v1/pro-deploys": { post: {
     operationId: "createProDeploy", summary: "Private pilot: prepare one paid static release", security: [{ bearerAuth: [] }],
-    description: "Requires a pilot-allowed, unscoped deploy identity. Upload content once, then share checkoutUrl with a human or let an MPP agent pay paymentUrl. No charge occurs on creation. The exact content and price are fixed. Max 1 MB decoded, 50 files, 1.5 MB request, 20 new intents per actor/hour. Reuse the idempotency key after a lost response; different content returns 409.",
+    description: "Requires a pilot-allowed, unscoped deploy identity. The owner must also authenticate checkout, status and payment requests. For MPP, supply X-OpenQuick-Authorization: Bearer <credential> separately from Authorization: Payment <proof>. No charge occurs on creation. The exact content and price are fixed. Max 1 MB decoded, 50 files, 1.5 MB request, 20 new intents per actor/hour. Reuse the idempotency key after a lost response; different content returns 409.",
     parameters: [{ in: "header", name: "Idempotency-Key", required: true, schema: { type: "string", minLength: 8, maxLength: 128 } }],
     requestBody: { required: true, ...json({ type: "object", required: ["files"], properties: { files: { type: "array", minItems: 1, maxItems: 50, items: { type: "object", required: ["path", "content"], properties: { path: string, content: { type: "string", description: "Base64 file bytes" } } } } } }) },
     responses: { "201": { description: "Existing or newly prepared intent", ...json(order) }, ...errors },
   } },
   "/api/v1/pro-payments/{id}": { get: {
-    operationId: "getProPayment", summary: "Read a private payment-link capability without contacting a provider", security: [], parameters: id,
+    operationId: "getProPayment", summary: "Owner: read a payment intent without contacting a provider", security: [{ bearerAuth: [] }], parameters: id,
     responses: { "200": { description: "Intent or published release", ...json(order) }, ...errors },
   } },
   "/api/v1/pro-payments/{id}/pay": { get: {
-    operationId: "payProDeploy", summary: "MPP Tempo charge, then publish the fixed release", security: [], parameters: id,
-    description: "Returns an MPP WWW-Authenticate challenge when unpaid. Retry with the Payment credential. Only a confirmed testnet transfer publishes content. Published requests return the same release without another payment. An interrupted uncertain settlement fails closed for operator reconciliation. Card and live payments are disabled.",
+    operationId: "payProDeploy", summary: "Owner: MPP Tempo charge, then publish the fixed release", security: [{ bearerAuth: [] }], parameters: [...id, { in: "header", name: "X-OpenQuick-Authorization", required: true, schema: string, description: "Bearer application credential; separate from the MPP Payment authorization" }],
+    description: "Requires the allowlisted owner's application credential on every request. Returns an MPP WWW-Authenticate challenge when unpaid. Retry with the Payment credential and the same X-OpenQuick-Authorization header. Only a confirmed testnet transfer publishes content. Published requests return the same release without another payment. An interrupted uncertain settlement fails closed for operator reconciliation. Card and live payments are disabled.",
     responses: { "200": { description: "Published release and Payment-Receipt", ...json(order) }, "402": { description: "MPP charge challenge in WWW-Authenticate" }, ...errors },
   } },
 };
