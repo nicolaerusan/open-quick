@@ -1,9 +1,10 @@
 # Private publishing pilot
 
-Status: implementation branch, **not deployed**. The authenticated HTTP API and
-real Tempo testnet settlement have been exercised. Human browser onboarding,
-isolated browser delivery, renewal, and mainnet wallet setup remain in progress.
-Keep `OPENQUICK_PRIVATE_PUBLISHING` unset in production until those gates pass.
+Status: implementation branch, **not deployed**. Commons Host authentication,
+the private project screen, isolated browser delivery, and testnet payment through
+the Commons proxy are implemented. Renewal, human wallet setup, and deployment
+remain in progress. Keep `OPENQUICK_PRIVATE_PUBLISHING` unset in production until
+the rollout gates pass.
 
 ## Product and current API
 
@@ -24,12 +25,14 @@ API calls use `X-OpenQuick-Authorization: Bearer <deploy credential>` so an MPP
 Regular Bearer authorization also works when no payment credential is present.
 Never put either credential in a URL, public resource, or command-line argument.
 Identities must appear in the operator's explicit pilot allowlist; scoped deploy
-credentials cannot operate this pilot. This is not yet a Commons human-role bridge.
+credentials cannot operate this pilot. Commons humans use short-lived publishing
+tickets instead; the application never receives their Commons login credential.
 
 | Method and route | Purpose |
 | --- | --- |
 | `POST /api/v1/private-projects` | `{name, files, viewers}` plus stable `Idempotency-Key`; returns an unpaid intent |
 | `GET /api/v1/private-projects` | Active projects the authenticated identity can view |
+| `GET /api/v1/private-projects/:slug` | Authorized project metadata and dedicated browser origin |
 | `GET /api/v1/private-payments/:id` | Owner-only immutable purchase and receipt |
 | `GET /api/v1/private-payments/:id/pay` | Owner-only MPP challenge, settlement, and private delivery |
 | `POST /api/v1/private-projects/:slug/deploy` | Owner-only `{files}` update within the term |
@@ -43,23 +46,59 @@ Confirmed payments survive restart, and retrying the order neither charges again
 nor extends the original term. Ambiguous settlement fails closed for reconciliation.
 Do not create a new purchase key to retry an uncertain payment.
 
-## Browser boundary still to complete
+## Commons browser flow and isolation
 
-The current API requires explicit bearer headers; it does not introduce browser
-cookies on OpenQuick's public-content origin. A returned private URL alone will
-therefore fail in an ordinary browser. The existing `checkoutUrl` is not a working
-private-project human checkout yet. This must be resolved before rollout.
+Hosts use Commons' `/s/open-quick/settings/payments/publishing` screen to upload
+files, review a purchase, pay, open a project, and update files or viewers. It is
+hidden from anonymous users and ordinary members. Each operation obtains a signed
+ticket from Commons, bound to its active human session, current Owner/Host role,
+the OpenQuick audience, and a five-minute expiry. OpenQuick verifies the ticket
+against the configured Commons origin on every request. Role loss, sign-out,
+suspension, Space archiving, or disabling the beta invalidates existing tickets.
 
-The next implementation must connect Commons' current human Owner/Host authority
-to the pilot, protect checkout as well as assets, and deliver private browser
-content on an isolated origin. Do not add ambient console cookies to the existing
-public hosted-content origin. CSP sandbox headers currently restrict API-fetched
-artifacts but do not constitute verified full browser isolation.
+Management tickets and project-specific read tickets have different purposes;
+read tickets cannot create projects or pay. The latter are POSTed to a project's
+dedicated hostname and become a Secure, HttpOnly, host-only cookie. Cookies and
+login tokens never appear in URLs. The form preserves the Commons Origin header
+and uses `noopener`. A `noreferrer` cross-origin form with `_blank` produces an
+opaque Origin in Chromium and is deliberately rejected by the receiving route.
+
+**Each browser project has its own hostname.** Multiple private projects cannot
+safely share an origin with arbitrary JavaScript. The operator preallocates 1–16
+hostnames on the same Railway service and volume. A hostname is reserved durably
+before charging and is never reused for another project. Capacity is rejected
+before payment. Adding capacity means adding another hostname to the configured
+pool, not another service, database, or volume.
+
+These hostnames expose only the read-session exchange and authenticated private
+assets. Public sites, the console, and payment APIs are absent. Hostname, project,
+viewer access, active session, and hosting expiry are checked before every read.
+CORP and COOP require the same origin; the response CSP restricts resources and
+connections to this project, disables workers, forms, frames and popups, and
+preserves script/module operation. Ordinary static modules and local JSON fetches
+work. Private responses are never publicly cached. Previously authorized users
+can retain content they already downloaded; this is access control, not DRM.
 
 The pre-existing public Pro release checkout/status/pay endpoints now require an
 allowlisted owner credential too. Anonymous discovery omits their OpenAPI entries.
-The host-facing browser bridge must support these routes before this branch ships.
-Existing public releases and settled records remain intact.
+Commons now links to private publishing. The old public Pro browser checkout is
+retired from that UI; approved API clients can still access their existing Pro
+orders. Existing public releases and settled records remain intact.
+
+### Configuration
+
+Commons API/web: existing payment beta and Space allowlist settings plus
+`OPENQUICK_PRIVATE_PUBLISHING=true`. The web needs `OPENQUICK_URL` (public API
+origin) and `OPENQUICK_PRIVATE_ORIGINS` (comma-separated dedicated HTTPS origins).
+The API derives a purpose-specific ticket signature from the existing persistent
+MPP secret; no human session credential is shared with OpenQuick.
+
+OpenQuick: `OPENQUICK_PRIVATE_PUBLISHING=true`, existing persistent Pro secret,
+testnet recipient and approved agent list, `OPENQUICK_COMMONS_ORIGIN`, and the
+same `OPENQUICK_PRIVATE_ORIGINS` pool. Every private hostname must differ from the
+Commons and public-content hostname. TLS may terminate at Railway; routing uses
+the configured hostname, never a caller's forwarded-proto value. Do not remove or
+reassign a hostname belonging to a paid project.
 
 ## Reproduce actual testnet settlement
 
@@ -90,13 +129,34 @@ private test project and receipt for inspection.
 
 ## Evidence, 2026-09-05 UTC
 
-- Typecheck and build passed; full suite passed 90 tests at the latest checkpoint.
+- Typecheck and build passed; full suite passed 92 tests at the latest checkpoint.
 - Actual local HTTP + testnet payment passed:
   `0xb0c47da64d87c5b5cc033679b1a76aecc66b1722ac7136fabb503db187debcbd`.
 - Receiver increased by exactly 10000 atomic pathUSD. Anonymous page/asset reads
   and public fallback routes returned 404. Update and retry added no charge.
 - This is **not** production deployment evidence or a human wallet/browser test.
 
-Remaining: host identity bridge and UI, browser isolation tests, renewals, production
-wallet proof/setup, withdrawal walkthrough, final regression checks, reviewed PRs,
-production deployment, and a production-hosted testnet payment/access test.
+The later combined Commons browser rehearsal passed with transaction
+`0x4d3608aa90e2ab043dbeb7fd9ebb6ab0ac347effb09dfd6480e4066a012d7915`.
+Its disposable Commons receiver `0x549d5ca66859a99d17177e45b906491043f06e74`
+gained exactly 10000 atomic pathUSD. The private tab opened, the Space balance
+displayed the receipt's funds, anonymous/ordinary-member access was denied, and
+removing the Host role invalidated the browser cookie. Retrying did not pay again.
+This uses an automated in-memory payer, not a human passkey or live funds.
+
+Chromium tests exercise two separate private origins, real Secure cookies over
+HTTPS, static modules/local data, cross-project reads and script inclusion, public
+page attacks, viewer revocation, role loss, cookie scope, capacity before payment,
+and attempted use of a read ticket as management authority.
+
+The Commons checkout includes `scripts/private-publishing-e2e.mjs`. With both
+repositories built, run it with `OPENQUICK_E2E_CHECKOUT` pointing at this checkout.
+It creates a disposable in-memory Commons server and test receiving wallet,
+launches an isolated copy of the web UI, creates a purchase in a browser, pays
+through Commons with real testnet tokens, opens the private tab, and verifies
+the Space's on-chain balance and access gates. It does not exercise an actual
+human passkey or external wallet approval.
+
+Remaining: durable immutable price/network/term fields before configurable live
+pricing, renewals, human production-wallet proof/setup, withdrawal rehearsal,
+reviewed PRs, production deployment, and a production-hosted testnet payment.

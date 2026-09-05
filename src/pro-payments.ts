@@ -17,10 +17,10 @@ export type ProOrder = {
   recipient: string; id: string; actor: string; contentHash: string; slug: string; createdAt: string; expiresAt: string;
   status: "pending" | "processing" | "paid" | "published" | "needs_review";
   files?: DeployFile[]; reference?: string; receipt?: string; site?: SiteRecord;
-  privateHosting?: { name: string; viewers: string[]; until?: string };
+  privateHosting?: { name: string; viewers: string[]; until?: string; origin?: string };
   fingerprint?: string;
 };
-export type ProConfig = { root: string; recipient: `0x${string}`; secret: string; baseUrl: string; actors: string[]; privateHosting?: boolean };
+export type ProConfig = { root: string; recipient: `0x${string}`; secret: string; baseUrl: string; actors: string[]; privateHosting?: boolean; commonsHosts?: boolean; privateOrigins?: string[] };
 export type ProVerifier = (order: ProOrder, request: Request) => Promise<Response | { reference: string; receipt: string }>;
 
 /** One process + mounted volume, matching OpenQuick's deployment topology. */
@@ -69,7 +69,8 @@ export class ProPayments {
       product: order.privateHosting ? "OpenQuick private hosting · 30 days" : "OpenQuick Pro deploy", amount: PRO_AMOUNT, currency: "pathUSD", network: "tempo-testnet", testMode: true,
       recipient: order.recipient, contentHash: order.contentHash, expiresAt: order.expiresAt,
       paymentUrl: `${this.config.baseUrl}${prefix}/${order.id}/pay`,
-      checkoutUrl: `${this.config.baseUrl}/pro/${order.id}`,
+      checkoutUrl: order.privateHosting ? null : `${this.config.baseUrl}/pro/${order.id}`,
+      ...(order.privateHosting?.origin ? { browserOrigin: order.privateHosting.origin } : {}),
       ...(order.privateHosting ? { visibility: "private", name: order.privateHosting.name, owner: order.actor, viewers: order.privateHosting.viewers, hostingUntil: order.privateHosting.until ?? null, termDays: 30 } : {}),
       ...(order.reference ? { transaction: order.reference } : {}),
       ...(order.site ? { site: order.site, url: `${this.config.baseUrl}${sitePrefix}/${order.site.slug}/`, releaseUrl: `${this.config.baseUrl}${sitePrefix}/${order.site.slug}/releases/${order.site.releaseId}/` } : {}),
@@ -83,11 +84,14 @@ export class ProPayments {
     if (paths.has("_openquick-release.json") || [...paths].some((path) => path.split("/").slice(0, -1).some((_, i, parts) => paths.has(parts.slice(0, i + 1).join("/"))))) throw new ProError(422, "Files conflict with a directory or reserved release metadata");
   }
   private validateViewers(viewers: unknown): string[] {
-    if (!Array.isArray(viewers) || viewers.length > 20 || viewers.some((v) => typeof v !== "string" || !this.config.actors.includes(v))) throw new ProError(422, "Choose up to 20 approved pilot identities");
+    if (!Array.isArray(viewers) || viewers.length > 20 || viewers.some((v) => typeof v !== "string" || !this.allowsActor(v))) throw new ProError(422, "Choose up to 20 approved pilot identities");
     return [...new Set(viewers)].sort();
   }
+  allowsActor(actor: string) {
+    return this.config.actors.includes(actor) || (this.config.privateHosting === true && this.config.commonsHosts === true && /^commons:[a-z0-9-]{1,64}$/.test(actor));
+  }
   async create(actor: string, requestKey: string, files: DeployFile[], details?: { name: string; viewers: string[] }) {
-    if (!this.config.actors.includes(actor)) throw new ProError(403, "Pro deploy is a private pilot; ask the operator for access");
+    if (!this.allowsActor(actor)) throw new ProError(403, "Pro deploy is a private pilot; ask the operator for access");
     if (!/^[a-zA-Z0-9._:-]{8,128}$/.test(requestKey)) throw new ProError(422, "Supply a stable Idempotency-Key (8–128 characters)");
     this.validateFiles(files);
     let privateHosting: ProOrder["privateHosting"];
@@ -109,6 +113,12 @@ export class ProPayments {
       if (all.length >= 1000) throw new ProError(429, "Pilot intent capacity reached; operator cleanup required");
       const recent = all.map((name) => this.read(name.slice(0, -5))).filter((order) => order.actor === actor && Date.parse(order.createdAt) > Date.now() - 3600_000);
       if (recent.length >= 20) throw new ProError(429, "Pilot limit: 20 new intents per hour");
+      if (privateHosting && this.config.privateOrigins) {
+        const used = new Set(all.map((name) => this.read(name.slice(0, -5)).privateHosting?.origin));
+        const origin = this.config.privateOrigins.find((candidate) => !used.has(candidate));
+        if (!origin) throw new ProError(429, "Private hosting pilot is at capacity. The operator must add a dedicated project hostname before another purchase.");
+        privateHosting.origin = origin;
+      }
       const order: ProOrder = { recipient: this.config.recipient, id, actor, contentHash, fingerprint, slug: `${privateHosting ? "oq-private" : "oq-pro"}-${randomBytes(12).toString("hex")}`, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600_000).toISOString(), status: "pending", files, ...(privateHosting ? { privateHosting } : {}) };
       this.save(order); return this.view(order);
     });
@@ -120,12 +130,12 @@ export class ProPayments {
   }
   authorizeOrder(id: string, actor: string) {
     const order = this.read(id);
-    if (!this.config.actors.includes(actor) || order.actor !== actor) throw new ProError(404, "Not found");
+    if (!this.allowsActor(actor) || order.actor !== actor) throw new ProError(404, "Not found");
     return order;
   }
   project(slug: string, actor: string, ownerOnly = false) {
     const order = this.privateOrders().find((entry) => entry.slug === slug && entry.status === "published");
-    if (!order?.privateHosting || !this.config.actors.includes(actor) || (order.actor !== actor && (ownerOnly || !order.privateHosting.viewers.includes(actor)))) throw new ProError(404, "Not found");
+    if (!order?.privateHosting || !this.allowsActor(actor) || (order.actor !== actor && (ownerOnly || !order.privateHosting.viewers.includes(actor)))) throw new ProError(404, "Not found");
     if (!order.privateHosting.until || Date.parse(order.privateHosting.until) <= Date.now()) throw new ProError(410, "Private hosting has expired");
     return order;
   }

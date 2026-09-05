@@ -1,5 +1,5 @@
 import { ProPayments, ProError } from "./pro-payments.js";
-import { paymentOnlyRequest, privatePublishingRoutes, type PrivatePublishing } from "./private-publishing.js";
+import { paymentOnlyRequest, privateBrowserRoutes, privatePublishingRoutes, type PrivatePublishing } from "./private-publishing.js";
 import { proPage } from "./pro-page.js";
 import { readFile } from "node:fs/promises";
 import crypto from "node:crypto";
@@ -223,6 +223,13 @@ type AppEnv = { Variables: { deployActor: PublicActor } };
 
 export function createApp(options: AppOptions): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
+  const privateBrowser = options.privatePublishing?.bridge ? privateBrowserRoutes(options.privatePublishing) : undefined;
+  app.use(async (c, next) => {
+    // Railway terminates TLS before Node. Route by the configured hostname,
+    // not Node's internal HTTP scheme or an untrusted forwarded-proto header.
+    if (privateBrowser && options.privatePublishing!.bridge!.privateOrigins.some((origin) => new URL(c.req.url).hostname === new URL(origin).hostname)) return privateBrowser.fetch(c.req.raw);
+    return next();
+  });
   const requestLogger = logger();
   app.use(async (c, next) => {
     // Payment links are private capabilities; keep them out of access logs.

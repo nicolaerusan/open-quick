@@ -1,4 +1,5 @@
 import { ProPayments } from "./pro-payments.js";
+import { commonsPublishingBridge } from "./commons-publishing.js";
 import { createHmac } from "node:crypto";
 import { join } from "node:path";
 import { serve } from "@hono/node-server";
@@ -20,10 +21,13 @@ if (process.env.OPENQUICK_PRIVATE_PUBLISHING === "true") {
   await privateStore.initialize();
   const secret = process.env.OPENQUICK_PRO_SECRET ?? "";
   if (!/^[a-f0-9]{64}$/i.test(secret)) throw Error("Private hosting needs the persistent payment challenge secret");
-  privatePublishing = { store: privateStore, payments: new ProPayments({
+  const bridge = process.env.OPENQUICK_COMMONS_ORIGIN && process.env.OPENQUICK_PRIVATE_ORIGINS
+    ? commonsPublishingBridge(process.env.OPENQUICK_COMMONS_ORIGIN, process.env.OPENQUICK_PRIVATE_ORIGINS.split(",").map((v) => v.trim()).filter(Boolean), boot.baseUrl ?? "") : undefined;
+  privatePublishing = { store: privateStore, ...(bridge ? { bridge } : {}), payments: new ProPayments({
     root, recipient: process.env.OPENQUICK_PRO_RECIPIENT as `0x${string}`,
     secret: createHmac("sha256", Buffer.from(secret, "hex")).update("openquick-private-hosting-v1").digest("hex"),
-    baseUrl: boot.baseUrl ?? "", privateHosting: true,
+    baseUrl: boot.baseUrl ?? "", privateHosting: true, commonsHosts: !!bridge,
+    ...(bridge ? { privateOrigins: bridge.privateOrigins } : {}),
     actors: (process.env.OPENQUICK_PRO_ACTORS ?? "operator").split(",").map((value) => value.trim()).filter(Boolean),
   }, privateStore) };
 }

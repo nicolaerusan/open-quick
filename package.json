@@ -27,6 +27,7 @@
     "viem": "^2.56.3"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@types/node": "^24.3.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
