@@ -61,10 +61,15 @@ test("native Pro checkout isolates its Host session from public content, stages 
     assert.equal((await app.request(`${checkoutOrigin}/pro/hosting/session`, { method: "POST", headers: { origin: publicOrigin, "content-type": "application/x-www-form-urlencoded" }, body: `ticket=${ticket}` })).status, 404);
     const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 900 } }); const page = await context.newPage();
     const failures: string[] = []; page.on("pageerror", error => failures.push(error.message));
+    await store.deploy("a".repeat(63), [{ path: "index.html", content: Buffer.from("<!doctype html><h1>A public site</h1>").toString("base64") }], "operator");
     await page.goto(publicOrigin);
     await page.getByRole("link", { name: "OpenQuick home", exact: true }).click();
     assert.equal(page.url(), `${publicOrigin}/`);
     await page.screenshot({ path: "/tmp/openquick-home-pro.png", fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Long site names must not widen the mobile homepage");
+    await page.getByRole("link", { name: "PRO ↗", exact: true }).waitFor({ state: "visible" });
+    await page.setViewportSize({ width: 1280, height: 900 });
     await page.getByRole("link", { name: "PRO ↗", exact: true }).click();
     await page.waitForURL(`${checkoutOrigin}/pro`);
     await page.screenshot({ path: "/tmp/openquick-pro-entry.png", fullPage: true });
