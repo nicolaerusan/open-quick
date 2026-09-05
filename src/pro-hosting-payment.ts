@@ -9,6 +9,7 @@ export type HostingOrder = {
   id: string; status: string; name: string; amount: string; amountAtomic: string; currency: string; token: string;
   network: string; chainId: number; quoteVersion: number; termDays: number; visibility: string; testMode: boolean;
   recipient: Address; hostingUntil?: string | null; transaction?: string; site?: { slug: string };
+  owner?: string; viewers?: string[]; browserOrigin?: string;
 };
 export function assertHostingOrder(order: HostingOrder) {
   const network = order.network === "tempo-testnet"

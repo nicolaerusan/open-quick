@@ -7,6 +7,12 @@ const upload = document.querySelector<HTMLInputElement>("#files")!;
 const review = document.querySelector<HTMLButtonElement>("#review")!;
 const message = document.querySelector<HTMLElement>("#error")!;
 const purchases = document.querySelector<HTMLElement>("#purchases")!;
+const projects = document.querySelector<HTMLElement>("#projects")!;
+const viewers = document.querySelector<HTMLInputElement>("#viewers")!;
+const folder = document.querySelector<HTMLInputElement>("#folder")!;
+let selected: HostingOrder | undefined;
+let published: HostingOrder[] = [];
+let actor = "";
 let files: { path: string; content: string }[] = [];
 let key = crypto.randomUUID();
 let busy = false;
@@ -24,7 +30,7 @@ function action(label: string, work: () => Promise<void>, primary = false) {
 }
 async function read(response: Response) {
   const body = await response.json();
-  if (!response.ok) throw Error(response.status === 404 ? "Your Host session may have expired. Reopen OpenQuick Pro from Commons and reuse the same purchase." : body.error ?? "Request failed. Check this purchase before retrying.");
+  if (!response.ok) throw Error(response.status === 404 ? "Your sign-in may have expired. Use Sign in again below and reuse the same purchase." : body.error ?? "Request failed. Check this purchase before retrying.");
   return body;
 }
 function render() {
@@ -39,7 +45,7 @@ function render() {
     if (order.status === "needs_review") card.append(text("p", "Payment outcome needs review. Do not pay again. Keep this order ID for the operator."));
     else if (order.status === "published") {
       if (order.hostingUntil) card.append(text("p", `Hosted through ${new Date(order.hostingUntil).toLocaleString()}`));
-      card.append(text("p", "Published. Open this project from Private publishing in Commons."));
+      card.append(text("p", "Published. Open and manage this project below."));
     } else if (order.status === "paid") controls.append(action("Finish publishing", async () => { assertHostingOrder(order); await read(await fetch(`/api/v1/private-payments/${order.id}/pay`, { cache: "no-store" })); await load(); }, true));
     else if (order.status === "pending") {
       const payer = payers.get(order.id);
@@ -63,10 +69,27 @@ function render() {
     if (order.transaction) card.append(text("p", `Transaction: ${order.transaction}`, "address"));
     card.append(text("p", `Order: ${order.id}`, "address")); purchases.append(card);
   }
+  projects.replaceChildren();
+  if (!published.length) projects.append(text("p", "Your paid projects will appear here."));
+  for (const project of published) {
+    const card = document.createElement("article"); card.className = "purchase";
+    card.append(text("h3", project.name), text("p", `Hosted through ${new Date(project.hostingUntil!).toLocaleString()}`), text("p", `Viewers: ${project.viewers?.join(", ") || "Owner only"}`));
+    const controls = document.createElement("div"); controls.className = "buttons";
+    controls.append(action("Open private project", async () => {
+      const slug = project.site?.slug; if (!slug || !/^oq-private-[a-f0-9]{24}$/.test(slug)) throw Error("Invalid project");
+      const grant = await read(await fetch(`/api/v1/private-projects/${slug}/open`, { method: "POST" }));
+      if (!project.browserOrigin || grant.action !== `${project.browserOrigin}/private/session` || !/^[a-f0-9]{64}$/.test(grant.ticket)) throw Error("Unexpected project destination");
+      const form = document.createElement("form"); form.method = "POST"; form.action = grant.action; form.target = "_blank"; form.rel = "noopener";
+      const input = document.createElement("input"); input.type = "hidden"; input.name = "ticket"; input.value = grant.ticket;
+      form.append(input); document.body.append(form); form.submit(); form.remove();
+    }, true));
+    if (project.owner === actor) controls.append(action("Update or manage viewers", async () => { selected = project; name.value = project.name; viewers.value = project.viewers?.join(", ") ?? ""; files = []; filesChanged(); editMode(); form.scrollIntoView({ behavior: "smooth" }); }));
+    card.append(controls); projects.append(card);
+  }
 }
 async function load() {
   const data = await read(await fetch("/api/v1/private-projects", { cache: "no-store" }));
-  orders = data.purchases; render();
+  orders = data.purchases; published = data.projects; actor = data.actor; render();
 }
 async function run(work: () => Promise<void>) {
   if (busy) return;
@@ -89,20 +112,42 @@ document.querySelector<HTMLButtonElement>("#sample")!.onclick = () => {
   filesChanged();
 };
 name.oninput = () => { key = crypto.randomUUID(); };
-upload.onchange = () => void run(async () => {
-  const selected = Array.from(upload.files ?? []);
+viewers.oninput = () => { key = crypto.randomUUID(); };
+const readFiles = (input: HTMLInputElement) => void run(async () => {
+  const selected = Array.from(input.files ?? []);
   files = []; filesChanged();
   if (!selected.length || selected.length > 50 || selected.reduce((total, file) => total + file.size, 0) > 1_000_000) throw Error("Choose up to 50 files totaling at most 1 MB.");
   files = await Promise.all(selected.map(async file => {
     const bytes = new Uint8Array(await file.arrayBuffer()); let binary = "";
     for (const byte of bytes) binary += String.fromCharCode(byte);
-    return { path: file.name, content: btoa(binary) };
+    return { path: file.webkitRelativePath ? file.webkitRelativePath.split("/").slice(1).join("/") : file.name, content: btoa(binary) };
   })); filesChanged();
+});
+upload.onchange = () => readFiles(upload);
+folder.onchange = () => readFiles(folder);
+document.querySelector<HTMLButtonElement>("#choose-folder")!.onclick = () => folder.click();
+function viewerHandles() { return viewers.value.split(",").map(v => v.trim()).filter(Boolean).map(v => v.startsWith("openquick:") ? v.slice(10) : v.startsWith("commons:") ? v : `commons:${v.replace(/^@/, "")}`); }
+function editMode() {
+  name.disabled = !!selected;
+  document.querySelector("#project-heading")!.textContent = selected ? `Update ${selected.name}` : "Prepare your private project";
+  review.textContent = selected ? "Upload update" : "Review Pro purchase";
+  document.querySelector<HTMLButtonElement>("#save-viewers")!.hidden = !selected;
+  document.querySelector<HTMLButtonElement>("#new-project")!.hidden = !selected;
+}
+document.querySelector<HTMLButtonElement>("#new-project")!.onclick = () => { selected = undefined; name.value = ""; viewers.value = ""; files = []; filesChanged(); editMode(); };
+document.querySelector<HTMLButtonElement>("#save-viewers")!.onclick = () => void run(async () => {
+  if (!selected?.site) throw Error("Choose a project");
+  await read(await fetch(`/api/v1/private-projects/${selected.site.slug}/viewers`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ viewers: viewerHandles() }) }));
+  await load(); message.textContent = "Viewer access updated.";
 });
 form.onsubmit = event => {
   event.preventDefault(); void run(async () => {
+    if (selected?.site) {
+      await read(await fetch(`/api/v1/private-projects/${selected.site.slug}/deploy`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ files }) }));
+      await load(); message.textContent = "Project updated. No additional payment."; return;
+    }
     const order = await read(await fetch("/api/v1/private-projects", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": key },
-      body: JSON.stringify({ name: name.value, files, viewers: [] }) }));
+      body: JSON.stringify({ name: name.value, files, viewers: viewerHandles() }) }));
     assertHostingOrder(order); await load();
   });
 };

@@ -38,7 +38,7 @@ function escapeHtml(value: string): string {
     .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
 }
 
-function landingPage(sites: Awaited<ReturnType<SiteStorage["list"]>>, baseUrl: string): string {
+function landingPage(sites: Awaited<ReturnType<SiteStorage["list"]>>, baseUrl: string, proEnabled = false): string {
   const cards = sites.length === 0
     ? `<article class="empty"><span>NO DEPLOYS YET</span><h3>Your first tiny internet starts here.</h3><p>Run the deploy command from any folder containing an index.html.</p></article>`
     : sites.map((site) => `<a class="site" href="/sites/${encodeURIComponent(site.slug)}/">
@@ -64,9 +64,10 @@ h1{font-size:clamp(62px,11vw,150px);line-height:.82;letter-spacing:-.075em;margi
 .sites{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.site,.empty{min-height:210px;padding:26px;background:var(--panel);border:1px solid var(--line);color:inherit;text-decoration:none;transition:.18s ease}.site:hover{transform:translateY(-4px);border-color:var(--lime)}.site h3,.empty h3{font-size:30px;margin:58px 0 10px;letter-spacing:-.04em}.empty{grid-column:1/-1;background:linear-gradient(120deg,#171716,#222518)}
 footer{margin-top:100px;padding-top:34px;padding-bottom:60px;border-top:1px solid var(--line);display:flex;justify-content:space-between;color:var(--muted);font:700 11px ui-monospace,monospace}
 @media(max-width:780px){.intro,.how,.sites,.agent-join{grid-template-columns:1fr}.agent-links{border-left:0;border-top:1px solid var(--line)}.step{border-right:0;border-bottom:1px solid var(--line)}.intro{align-items:start}.hero{padding-top:65px}h1{font-size:70px}.section-head{margin-top:70px}.status{display:none}}
-</style></head><body><header><div class="brand"><span class="mark"></span>OPENQUICK</div><nav class="nav"><a href="/join">AGENT JOIN →</a><div class="status">● SYSTEM READY</div></nav></header>
+</style></head><body><header><div class="brand"><span class="mark"></span>OPENQUICK</div><nav class="nav">${proEnabled ? '<a href="/pro">PRO ↗</a>' : ''}<a href="/join">AGENT JOIN →</a><div class="status">● SYSTEM READY</div></nav></header>
 <main><section class="hero"><div class="kicker">ZERO-CONFIG STATIC HOSTING / 001</div><h1>SHIP THE<br><span class="outline">FOLDER.</span></h1><div class="intro"><p>Turn a folder of HTML, CSS, and JavaScript into a live URL. No framework. No pipeline. No ceremony.</p><div class="command"><b>$</b><span>${escapeHtml(command)}</span></div></div></section>
 <section class="how"><article class="step"><em>01</em><h2>Point</h2><p>Choose any folder with an index.html.</p></article><article class="step"><em>02</em><h2>Push</h2><p>The TypeScript CLI validates and uploads the release atomically.</p></article><article class="step"><em>03</em><h2>Share</h2><p>Open a durable, agent-friendly URL immediately.</p></article></section>
+${proEnabled ? '<section class="agent-join"><div class="agent-copy"><span>OPENQUICK PRO / HOST BETA</span><h2>MAKE IT<br>PRIVATE.</h2><p>Give your wiki, report, or project a private home. Pay once for 30 days of hosting, with updates included.</p><a class="preview" href="/pro">EXPLORE OPENQUICK PRO →</a></div><div class="agent-links"><a href="/pro"><span>PRIVATE HOSTING</span><b>PRO →</b></a><a href="/pro"><span>PAY WITH MPP</span><b>CHECKOUT →</b></a><a href="/pro"><span>YOUR PRO PROJECTS</span><b>MANAGE →</b></a></div></section>' : ''}
 <section class="agent-join"><div class="agent-copy"><span>FOR SOFTWARE AGENTS / START HERE</span><h2>ONE URL.<br>ZERO GUESSING.</h2><p>Give your agent a canonical entry point with the live capability map, exact deploy steps, safety boundaries, and verification receipt.</p><a class="preview" href="/join">OPEN THE JOIN GUIDE →</a></div><div class="agent-links"><a href="/agent.md"><span>AGENT.MD</span><b>START</b></a><a href="/skill.md"><span>SKILL.MD</span><b>WORKFLOW</b></a><a href="/openapi.json"><span>OPENAPI.JSON</span><b>SCHEMA</b></a><a href="/.well-known/agent.json"><span>AGENT.JSON</span><b>DISCOVER</b></a></div></section>
 <div class="section-head" id="sites"><h2>LIVE SITES</h2><span>${sites.length.toString().padStart(2,"0")} TOTAL</span></div><section class="sites">${cards}</section></main>
 <footer><span>OPEN SOURCE / RAILWAY READY</span><span>KEEP IT SMALL. MAKE IT USEFUL.</span></footer></body></html>`;
@@ -244,7 +245,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const others = [options.privatePublishing!.payments.config.baseUrl, ...(bridge ? [bridge.commonsOrigin, ...bridge.privateOrigins] : [])];
     if (!bridge || origin !== checkoutOrigin || others.some(other => new URL(other).hostname === new URL(origin).hostname)) throw Error("Pro checkout needs its own hostname, separate from Commons and all hosted content");
     const routes = proHostingRoutes(options.privatePublishing);
-    for (const path of ["/pro/hosting", "/pro/hosting/*", "/pro/hosting-client.js"]) checkout.all(path, c => routes.fetch(c.req.raw));
+    for (const path of ["/pro", "/pro/hosting", "/pro/hosting/*", "/pro/hosting-client.js"]) checkout.all(path, c => routes.fetch(c.req.raw));
     for (const path of ["/api/v1/private-projects", "/api/v1/private-projects/*", "/api/v1/private-payments/*"]) checkout.all(path, c => privateRoutes.fetch(c.req.raw));
     checkout.all("*", c => c.json({ error: "Not found" }, 404));
   }
@@ -279,6 +280,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   for (const path of ["/api/v1/private-projects", "/api/v1/private-projects/*", "/api/v1/private-payments/*", "/private/*"]) {
     app.all(path, (c) => privateRoutes.fetch(c.req.raw));
   }
+  if (checkoutOrigin) app.get("/pro", c => c.redirect(`${checkoutOrigin}/pro`, 303));
   app.use(async (c, next) => {
     if (!/^\/(?:pro(?:\/|$)|pro-client\.js$|api\/v1\/pro-)/.test(c.req.path)) return next();
     c.header("cache-control", "private, no-store");
@@ -518,7 +520,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   });
   app.get("/", async (c) => {
     const origin = options.baseUrl || new URL(c.req.url).origin;
-    return c.html(landingPage(await options.store.list(), origin));
+    return c.html(landingPage(await options.store.list(), origin, !!checkoutOrigin));
   });
   app.notFound((c) => c.json({ error: "Not found" }, 404));
   return app;

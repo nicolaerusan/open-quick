@@ -8,23 +8,36 @@ subscription price. Private files remain limited to 50 files and 1 MB.
 
 ## Human checkout
 
-1. A human Commons Host opens **Private publishing** in the OpenQuick Space.
-2. **Open OpenQuick Pro checkout** posts a five-minute, purpose-specific Commons
-   ticket to the configured isolated checkout origin. The ticket never appears
-   in a URL. The receiving wallet connection is separate from this app session.
-3. The human uploads a project or uses the sample, then reviews a fixed quote.
+1. Open the OpenQuick app and choose **Pro** in the main navigation. The Pro
+   offer is visible before sign-in; purchases remain restricted to the Host beta.
+2. **Continue with Commons** uses the existing Commons account to identify the
+   Host, then immediately returns to OpenQuick. It does not visit Space settings.
+   OpenQuick binds the callback to a random, short-lived, host-only sign-in cookie.
+   Commons posts its purpose-specific ticket to the fixed OpenQuick callback; no
+   session credential appears in the URL or reaches public hosted content.
+3. Upload files or a folder, or use the sample wiki. Review the fixed quote.
    Creating a quote reserves a project hostname but does not charge anything.
-4. **Choose payment wallet** opens the official Tempo Wallet popup, without
-   granting an agent access key. The buyer sees the amount, asset, network and
-   receiver before approving. A buyer should use an address different from the
-   receiver to demonstrate actual incoming revenue.
-5. The browser validates every payment field and requests a sign-only MPP pull
-   credential. OpenQuick records the attempt before broadcast, waits for chain
-   confirmation, and atomically publishes the private project. Expired unsent
-   approvals are rejected locally. Uncertain outcomes require review.
-6. The same purchase is visible in Commons. The owner opens its private page,
-   manages viewers and uploads included updates there. If the checkout session
-   expires, reopening it from Commons restores the saved purchases.
+4. **Choose payment wallet** opens the official Tempo Wallet popup without an
+   agent access key. Review the amount, asset, network and receiver before approval.
+5. The browser validates the MPP challenge and requests a sign-only pull credential.
+   OpenQuick records the attempt before broadcast, confirms settlement and publishes.
+   Reusing a paid purchase finishes delivery without a second payment.
+6. **Your private projects** in OpenQuick provides **Open private project**, included
+   updates and viewer management. If sign-in expires, use **Sign in again** in
+   OpenQuick and reuse the saved purchase. Commons keeps the receiving wallet and
+   balance. Its former publishing page now links to the OpenQuick app.
+
+Private-page opening uses a separate opaque viewing grant, bound to the project
+and a live Commons identity. The general API ticket stays in a bounded in-memory
+OpenQuick map and never enters the uploaded page's origin. Each asset request
+rechecks the underlying identity, project access and hosting expiry. A process
+restart clears these short-lived grants; reopen the project from OpenQuick.
+Purchases, project files, payment receipts and hosting terms remain durable.
+
+The form-bearing sign-in and checkout pages use an origin-only referrer policy
+so browser form POSTs retain their verifiable Origin without disclosing paths,
+query state or tickets. Callback Origin and pending sign-in state are both checked;
+private APIs keep same-origin mutation checks and private caching headers.
 
 The receiving human withdraws independently from the wallet that controls the
 quoted destination. This checkout grants the buyer a hosting entitlement; it
@@ -42,7 +55,7 @@ public discovery. All other paths return 404.
 Checkout uses an HttpOnly, Secure, host-only cookie. Every request revalidates
 the underlying Commons session and live Host role. Cookie-authenticated writes
 also require the checkout's exact Origin. Public-hosted JavaScript cannot read
-the checkout or its private-project data. The legacy header-authenticated agent
+the checkout or its private-project data. The public app links into this isolated OpenQuick checkout. The legacy header-authenticated agent
 API stays on the public API origin and does not accept this browser cookie there.
 
 Roll out in this order:

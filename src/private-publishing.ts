@@ -5,6 +5,7 @@ import type { PublicActor } from "./auth-gate.js";
 import type { DeployFile } from "./types.js";
 import type { PublishingBridge } from "./commons-publishing.js";
 import { proSessionIdentity } from "./pro-session.js";
+import { browserGrantIdentity, issueBrowserGrant } from "./pro-browser-grants.js";
 
 export type PrivatePublishing = { payments: ProPayments; store: SiteStorage; bridge?: PublishingBridge; checkoutOrigin?: string };
 type Env = { Variables: { actor: string } };
@@ -102,6 +103,7 @@ export function privatePublishingRoutes(
     const body = await privateJson(c.req.raw);
     return c.json(await publishing!.payments.shareProject(c.req.param("slug"), c.get("actor"), body.viewers));
   });
+  app.post("/api/v1/private-projects/:slug/open", async (c) => c.json(await issueBrowserGrant(publishing!, c.req.raw, c.req.param("slug"), c.get("actor"))));
   app.get("/api/v1/private-projects/:slug/releases", async (c) => {
     publishing!.payments.project(c.req.param("slug"), c.get("actor"));
     return c.json({ releases: await publishing!.store.history(c.req.param("slug")) });
@@ -155,7 +157,8 @@ export function privateBrowserRoutes(publishing: PrivatePublishing) {
   });
   app.onError((_error, c) => c.json({ error: "Not found" }, 404));
   app.post("/private/session", async (c) => {
-    if (c.req.header("origin") !== bridge.commonsOrigin ||
+    const native = !!publishing.checkoutOrigin && c.req.header("origin") === publishing.checkoutOrigin;
+    if ((!native && c.req.header("origin") !== bridge.commonsOrigin) ||
       !c.req.header("content-type")?.startsWith("application/x-www-form-urlencoded")) return c.json({ error: "Not found" }, 404);
     const reader = c.req.raw.body?.getReader(); if (!reader) return c.json({ error: "Not found" }, 404);
     const chunks: Uint8Array[] = []; let bytes = 0;
@@ -166,7 +169,7 @@ export function privateBrowserRoutes(publishing: PrivatePublishing) {
       chunks.push(part.value);
     }
     const ticket = new URLSearchParams(Buffer.concat(chunks).toString("utf8")).get("ticket") ?? "";
-    const identity = await bridge.verify(ticket);
+    const identity = native ? await browserGrantIdentity(publishing, ticket) : await bridge.verify(ticket);
     if (!identity || identity.purpose !== "preview" || !identity.project) return c.json({ error: "Not found" }, 404);
     const order = publishing.payments.project(identity.project, identity.actor);
     if (!order.privateHosting?.origin || new URL(order.privateHosting.origin).hostname !== new URL(c.req.url).hostname) return c.json({ error: "Not found" }, 404);
@@ -180,7 +183,8 @@ export function privateBrowserRoutes(publishing: PrivatePublishing) {
     const prefix = `${cookieName(slug)}=`;
     const matches = cookies.filter((value) => value.startsWith(prefix));
     if (matches.length !== 1) return c.json({ error: "Not found" }, 404);
-    const identity = await bridge.verify(matches[0]!.slice(prefix.length));
+    const token = matches[0]!.slice(prefix.length);
+    const identity = /^[a-f0-9]{64}$/.test(token) ? await browserGrantIdentity(publishing, token) : await bridge.verify(token);
     if (!identity || identity.purpose !== "preview" || identity.project !== slug) return c.json({ error: "Not found" }, 404);
     const order = publishing.payments.project(slug, identity.actor);
     const origin = order.privateHosting?.origin;
