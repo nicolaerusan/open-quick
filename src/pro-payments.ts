@@ -142,7 +142,7 @@ export class ProPayments {
       if (privateHosting && this.config.privateOrigins) {
         const used = new Set(all.map((name) => this.read(name.slice(0, -5)).privateHosting?.origin));
         const origin = this.config.privateOrigins.find((candidate) => !used.has(candidate));
-        if (!origin) throw new ProError(429, "Private hosting pilot is at capacity. The operator must add a dedicated project hostname before another purchase.");
+        if (!origin) throw new ProError(429, "Private hosting is currently full. If you already started a purchase, continue it under Your Pro purchases below.");
         privateHosting.origin = origin;
       }
       const order: ProOrder = { quote: { ...this.quote }, recipient: this.recipient(this.quote.network), id, actor, contentHash, fingerprint, slug: `${privateHosting ? "oq-private" : "oq-pro"}-${randomBytes(12).toString("hex")}`, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600_000).toISOString(), status: "pending", files, ...(privateHosting ? { privateHosting } : {}) };
@@ -158,6 +158,23 @@ export class ProPayments {
     const order = this.read(id);
     if (!this.allowsActor(actor) || order.actor !== actor) throw new ProError(404, "Not found");
     return order;
+  }
+  /** Refresh an unpaid owner's payment window without reserving another site. */
+  async resume(id: string, actor: string) {
+    return this.lock(async () => {
+      const order = this.authorizeOrder(id, actor);
+      if (order.status === "processing" || order.status === "needs_review") throw new ProError(409, "Payment outcome needs review. Do not pay again.");
+      if (order.status !== "pending") return this.view(order);
+      if (order.reference || order.receipt) throw new ProError(409, "This purchase has a payment record and needs review. Do not pay again.");
+      if (order.quote.network === "tempo-mainnet" && !this.config.mainnetPayments) throw new ProError(409, "Mainnet charging is paused. No payment was requested.");
+      if (order.recipient.toLowerCase() !== this.recipient(order.quote.network).toLowerCase()) throw new ProError(409, "The receiving account changed. This saved purchase needs review before payment.");
+      if (!Number.isFinite(Date.parse(order.expiresAt))) throw new ProError(409, "This saved purchase needs review before payment.");
+      if (Date.parse(order.expiresAt) <= Date.now()) {
+        order.expiresAt = new Date(Date.now() + 3600_000).toISOString();
+        this.save(order);
+      }
+      return this.view(order);
+    });
   }
   project(slug: string, actor: string, ownerOnly = false) {
     const order = this.privateOrders().find((entry) => entry.slug === slug && entry.status === "published");
@@ -190,7 +207,7 @@ export class ProPayments {
       if (order.status === "pending") {
         if (order.quote.network === "tempo-mainnet" && !this.config.mainnetPayments) throw new ProError(409, "Mainnet charging is paused. No payment was requested.");
         if (order.recipient.toLowerCase() !== this.recipient(order.quote.network).toLowerCase()) throw new ProError(409, "The receiving account changed. This unpaid intent is no longer payable.");
-        if (Date.parse(order.expiresAt) <= Date.now()) throw new ProError(410, "Intent expired. No payment was requested.");
+        if (Date.parse(order.expiresAt) <= Date.now()) throw new ProError(410, "The payment window expired. Resume this saved purchase to continue. No payment was requested.");
         const proof = request.headers.get("payment-authorization") ?? request.headers.get("authorization");
         if (!proof) {
           const challenge = await this.verify(order, request);
@@ -201,6 +218,8 @@ export class ProPayments {
         try {
           const credential = Credential.deserialize(proof);
           if (!Challenge.verify(credential.challenge, { secretKey: this.config.secret }) || credential.challenge.request.externalId !== order.id || credential.challenge.method !== "tempo" || credential.challenge.intent !== "charge") throw Error();
+          // Resuming must not revive an approval issued for an expired window.
+          if (credential.challenge.expires && (!Number.isFinite(Date.parse(credential.challenge.expires)) || Date.parse(credential.challenge.expires) <= Date.now())) throw Error();
         } catch { throw new ProError(422, "Use the MPP challenge issued for this intent"); }
         order.status = "processing"; this.save(order);
         try {

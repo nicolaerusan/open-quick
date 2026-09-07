@@ -17,6 +17,8 @@ subscription price. Private files remain limited to 50 files and 1 MB.
    session credential appears in the URL or reaches public hosted content.
 3. Upload files or a folder, or use the sample wiki. Review the fixed quote.
    Creating a quote reserves a project hostname but does not charge anything.
+   On return, continue under **Your Pro purchases**. An expired payment window
+   shows **Resume purchase**; this keeps the saved files, price and hostname.
 4. **Choose payment wallet** opens the official Tempo Wallet popup without an
    agent access key. Review the amount, asset, network and receiver before approval.
 5. The browser validates the MPP challenge and requests a sign-only pull credential.
@@ -155,3 +157,30 @@ fixture, delivers the agent credential once into process memory, purchases with
 faucet tokens, verifies private delivery and checks retries/updates do not charge
 a second time. It does not onboard a production agent or grant wallet spending
 permission; the service credential and testnet signer are separate.
+
+## Returning to a saved purchase
+
+Payment windows last one hour, independently of the five-minute beta sign-in.
+An owner can call `POST /api/v1/private-payments/:id/resume` to refresh an expired,
+unpaid window. It changes only the expiry; order ID, files, audience, recipient,
+network, price, hosting term and reserved hostname stay the same. Repeating the
+call during an open window is idempotent. It never sends a payment or extends an
+already-paid hosting term. Paid purchases return their existing receipt.
+
+Processing or uncertain payments cannot be resumed into a payable state. A
+changed receiving account, paused mainnet charging or malformed expiry also
+requires review. An expired MPP challenge remains invalid after resuming; request
+a fresh challenge before asking the wallet to approve payment.
+
+The browser reloads the owner's saved purchases before creating an order. If
+name, file hash and normalized audience match an unpaid purchase, it resumes
+that purchase instead. Agents should retain their stable create idempotency key
+and saved order ID, then use the resume endpoint when needed.
+
+This recovery works when the hostname pool is full, because it reuses the
+existing reservation. Distinct new projects still need a free configured private
+hostname. No order is deleted and no hostname is reassigned by this change.
+
+The agent testnet rehearsal also expires and resumes its ephemeral local order
+before settlement, then verifies resuming the published order preserves its
+receipt and original hosting expiry.

@@ -86,6 +86,9 @@ test("native Pro checkout isolates its Host session from public content, stages 
     assert.equal(payments.privateOrders().length, 1); assert.equal(payments.privateOrders()[0]!.quote.network, "tempo-mainnet");
     assert.equal(payments.privateOrders()[0]!.status, "pending");
     const orderId = payments.privateOrders()[0]!.id;
+    assert.equal((await context.request.post(`${checkoutOrigin}/api/v1/private-payments/${orderId}/resume`, { headers: { origin: publicOrigin } })).status(), 404);
+    const resumed = await context.request.post(`${checkoutOrigin}/api/v1/private-payments/${orderId}/resume`, { headers: { origin: checkoutOrigin } });
+    assert.equal(resumed.status(), 200); assert.equal((await resumed.json()).id, orderId);
     const realPay = payments.pay;
     payments.pay = async (_id, request) => Response.json({ proof: request.headers.get("authorization") });
     try {

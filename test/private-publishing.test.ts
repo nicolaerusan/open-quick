@@ -65,6 +65,56 @@ test("private beta is invisible to anonymous and unapproved identities, includin
   assert.equal((await disabled.request("/api/v1/private-projects", { headers: f.auth("operator") })).status, 404);
 });
 
+test("an owner resumes an expired purchase at full capacity without changing its project or terms", async () => {
+  const f = await setup();
+  Object.assign(f.config, { privateOrigins: ["https://private-one.test"] });
+  const order = await (await f.create()).json();
+  const saved = f.payments.read(order.id); saved.expiresAt = "2000-01-01T00:00:00Z";
+  const path = join(f.privateRoot, "pro-orders", `${order.id}.json`);
+  await writeFile(path, JSON.stringify(saved));
+  assert.equal((await f.create("another-purchase", { name: "Another project" })).status, 429);
+  const resumePath = `/api/v1/private-payments/${order.id}/resume`;
+  for (const headers of [{}, f.auth("viewer"), f.auth("outsider"), f.auth("unapproved")]) {
+    assert.equal((await f.app.request(resumePath, { method: "POST", headers })).status, 404);
+  }
+  const response = await f.app.request(resumePath, { method: "POST", headers: f.auth("operator") });
+  assert.equal(response.status, 200);
+  const resumed = await response.json();
+  assert.ok(Date.parse(resumed.expiresAt) > Date.now());
+  const after = f.payments.read(order.id);
+  assert.deepEqual({ ...after, expiresAt: saved.expiresAt }, saved);
+  assert.equal(f.payments.privateOrders().length, 1);
+  const restarted = new ProPayments({ ...f.config, quote: { amountAtomic: "25000", termDays: 7 } }, f.privateStore, f.verifier);
+  assert.deepEqual(await restarted.resume(order.id, "operator"), resumed, "Resume is idempotent and keeps the stored price after a deployment");
+  const oldChallenge = Challenge.from({ secretKey: f.config.secret, realm: "openquick-pro", method: "tempo", intent: "charge",
+    expires: saved.expiresAt, request: { amount: "10000", currency: saved.quote.token, recipient: saved.recipient, externalId: order.id } });
+  const proof = Credential.serialize({ challenge: oldChallenge, payload: { type: "transaction", signature: "mock" } });
+  assert.equal((await f.app.request(`/api/v1/private-payments/${order.id}/pay`, { headers: { ...f.auth("operator"), authorization: proof } })).status, 422);
+  assert.equal(f.payments.read(order.id).status, "pending"); assert.equal(f.count(), 0);
+  const paid = await f.pay(order.id); assert.equal(paid.status, 200); assert.equal(f.count(), 1);
+  const published = await paid.json();
+  assert.deepEqual(await f.payments.resume(order.id, "operator"), published, "Resume cannot extend a paid hosting term");
+  assert.equal(f.count(), 1);
+});
+
+test("resume preserves uncertain outcomes and rejects a changed receiver or paused mainnet", async () => {
+  const f = await setup(); const order = await (await f.create()).json();
+  const original = f.payments.read(order.id); const path = join(f.privateRoot, "pro-orders", `${order.id}.json`);
+  for (const status of ["processing", "needs_review"] as const) {
+    const stored = { ...original, status, expiresAt: "2000-01-01T00:00:00Z" };
+    await writeFile(path, JSON.stringify(stored));
+    await assert.rejects(f.payments.resume(order.id, "operator"), { status: 409 });
+    assert.deepEqual(f.payments.read(order.id), stored);
+  }
+  const changed = { ...original, recipient: "0x2222222222222222222222222222222222222222", expiresAt: "2000-01-01T00:00:00Z" };
+  await writeFile(path, JSON.stringify(changed));
+  await assert.rejects(f.payments.resume(order.id, "operator"), { status: 409 });
+  const mainnet = new ProPayments({ ...f.config, mainnetPayments: true, mainnetRecipient: f.config.recipient }, f.privateStore, f.verifier);
+  const mainnetOrder = await mainnet.create("operator", "mainnet-purchase", files, { name: "Mainnet project", viewers: [] });
+  await assert.rejects(f.payments.resume(mainnetOrder.id, "operator"), { status: 409 });
+  assert.equal(f.count(), 0);
+});
+
 test("validates content and initial audience before payment; changed intent cannot reuse a purchase key", async () => {
   const f = await setup();
   assert.equal((await f.create("bad-private-one", { files: [{ path: "a.txt", content: "eA==" }] })).status, 422);

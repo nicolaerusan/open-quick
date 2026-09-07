@@ -2,7 +2,7 @@
 // host-only pilot. The disposable payer stays in memory and uses faucet tokens.
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serve } from "@hono/node-server";
@@ -80,6 +80,20 @@ try {
   if (agentHandshake) assert.equal(order.owner, "smoke-agent");
   assert.equal(new URL(order.paymentUrl).origin, base);
   assert.equal((await fetch(order.paymentUrl)).status, 404);
+  if (agentHandshake) {
+    // Only this ephemeral local fixture is aged; never edit a remote order.
+    const path = join(root, "private-hosting", "pro-orders", `${order.id}.json`);
+    const stored = JSON.parse(await readFile(path, "utf8"));
+    stored.expiresAt = "2000-01-01T00:00:00Z";
+    await writeFile(path, JSON.stringify(stored));
+    assert.equal((await fetch(order.paymentUrl, { headers })).status, 410);
+    const response = await fetch(`${base}/api/v1/private-payments/${order.id}/resume`, { method: "POST", headers });
+    assert.equal(response.status, 200);
+    const resumed = await response.json();
+    assert.ok(Date.parse(resumed.expiresAt) > Date.now());
+    assert.deepEqual({ ...resumed, expiresAt: order.expiresAt }, order);
+    console.log("Expired agent purchase resumed with the same project, owner, receiver and price.");
+  }
   const client = Mppx.create({ polyfill: false, methods: [tempo.charge({ account: payer, expectedChainId: tempoModerato.id, expectedRecipients: [receiver], getClient: () => rpc })], onChallenge: async (challenge, { createCredential }) => {
     assert.equal(challenge.request.amount, "10000"); assert.equal(String(challenge.request.currency).toLowerCase(), token);
     return createCredential();
@@ -97,6 +111,10 @@ try {
   assert.doesNotMatch(await (await fetch(`${base}/api/v1/sites`)).text(), new RegExp(receipt.site.slug));
   const retry = await client.fetch(order.paymentUrl, { headers }); const repeated = await retry.json();
   assert.equal(retry.status, 200); assert.equal(repeated.transaction, receipt.transaction); assert.equal(repeated.hostingUntil, receipt.hostingUntil);
+  if (agentHandshake) {
+    const resumed = await (await fetch(`${base}/api/v1/private-payments/${order.id}/resume`, { method: "POST", headers })).json();
+    assert.equal(resumed.transaction, receipt.transaction); assert.equal(resumed.hostingUntil, receipt.hostingUntil);
+  }
   assert.equal((await (await create()).json()).id, order.id);
   const update = await fetch(`${base}/api/v1/private-projects/${receipt.site.slug}/deploy`, { method: "POST", headers, body: JSON.stringify({ files: [{ path: "index.html", content: Buffer.from("<h1>Updated within the paid hosting term</h1>").toString("base64") }] }) });
   assert.equal(update.status, 201); assert.match(await (await fetch(receipt.url, { headers })).text(), /Updated within/);

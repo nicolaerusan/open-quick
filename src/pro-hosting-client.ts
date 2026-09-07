@@ -49,6 +49,12 @@ function render() {
       card.append(text("p", "Published. Open and manage this project below."));
     } else if (order.status === "paid") controls.append(action("Finish publishing", async () => { assertHostingOrder(order); await read(await fetch(`/api/v1/private-payments/${order.id}/pay`, { cache: "no-store" })); await load(); }, true));
     else if (order.status === "pending") {
+      if (order.expiresAt && Date.parse(order.expiresAt) <= Date.now()) {
+        card.append(text("p", "Your project is saved. Resume this purchase to refresh the payment window at the same price."));
+        controls.append(action("Resume purchase", async () => { await resumePurchase(order); }, true));
+        card.append(text("p", `Order: ${order.id}`, "address")); purchases.append(card);
+        continue;
+      }
       const payer = payers.get(order.id);
       if (!payer) controls.append(action("Choose payment wallet", async () => {
         assertHostingOrder(order); wallet ??= hostingWallet(); payers.set(order.id, await connectHostingPayer(wallet, order)); render();
@@ -92,6 +98,14 @@ function render() {
 async function load() {
   const data = await read(await fetch("/api/v1/private-projects", { cache: "no-store" }));
   orders = data.purchases; published = data.projects; actor = data.actor; render();
+}
+async function resumePurchase(order: HostingOrder) {
+  const resumed = await read(await fetch(`/api/v1/private-payments/${order.id}/resume`, { method: "POST" }));
+  assertHostingOrder(resumed);
+  payers.delete(order.id);
+  await load();
+  inform("Your saved purchase is ready. Choose a payment wallet below. No new purchase or charge was created.");
+  purchases.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 async function run(work: () => Promise<void>) {
   if (busy) return;
@@ -148,6 +162,14 @@ form.onsubmit = event => {
       await read(await fetch(`/api/v1/private-projects/${selected.site.slug}/deploy`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ files }) }));
       await load(); inform("Project updated. No additional payment."); return;
     }
+    // A refresh loses the browser's random retry key, but the server still
+    // lists this owner's saved purchases. Reuse an identical unpaid project.
+    await load();
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(files)));
+    const contentHash = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, "0")).join("");
+    const requestedViewers = JSON.stringify([...new Set(viewerHandles())].sort());
+    const saved = orders.find(order => order.status === "pending" && order.name === name.value.trim() && order.contentHash === contentHash && JSON.stringify([...(order.viewers ?? [])].sort()) === requestedViewers);
+    if (saved) { await resumePurchase(saved); return; }
     const order = await read(await fetch("/api/v1/private-projects", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": key },
       body: JSON.stringify({ name: name.value, files, viewers: viewerHandles() }) }));
     assertHostingOrder(order); await load();

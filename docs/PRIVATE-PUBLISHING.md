@@ -35,6 +35,7 @@ tickets instead; the application never receives their Commons login credential.
 | `GET /api/v1/private-projects` | Active projects the authenticated identity can view |
 | `GET /api/v1/private-projects/:slug` | Authorized project metadata and dedicated browser origin |
 | `GET /api/v1/private-payments/:id` | Owner-only immutable purchase and receipt |
+| `POST /api/v1/private-payments/:id/resume` | Owner-only refresh of an expired unpaid payment window; reuses the saved project and quote |
 | `GET /api/v1/private-payments/:id/pay` | Owner-only MPP challenge, settlement, and private delivery |
 | `POST /api/v1/private-projects/:slug/deploy` | Owner-only `{files}` update within the term |
 | `POST /api/v1/private-projects/:slug/viewers` | Owner-only `{viewers}` replacement, applied immediately |

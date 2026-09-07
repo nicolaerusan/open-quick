@@ -125,7 +125,7 @@ test("private browser content is isolated, assets work, and access revocation by
     assert.equal((await context.request.get(`${a.origin}/sites/attacker/`)).status(), 404);
     assert.equal((await context.request.get(aUrl, { headers: { referer: aUrl } })).status(), 200);
     assert.equal((await context.request.get(`${b.origin}/private/${a.slug}/`)).status(), 404, "A project was served from another project's hostname");
-    await assert.rejects(() => publish("over-capacity", { "index.html": "<h1>Too many</h1>" }), /at capacity/);
+    await assert.rejects(() => publish("over-capacity", { "index.html": "<h1>Too many</h1>" }), /currently full/);
     grants.set("api-grant", { actor: "commons:owner", purpose: "api", expires_at: Math.floor(Date.now() / 1000) + 300 });
     assert.equal((await app.request(`${publicOrigin}/api/v1/private-projects`, { headers: { "x-openquick-authorization": "Publishing api-grant" } })).status, 200);
     assert.equal((await app.request(`${publicOrigin}/api/v1/private-projects`, { headers: { "x-openquick-authorization": `Publishing ${a.ticket}` } })).status, 404, "Read grant became management authority");
