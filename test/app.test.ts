@@ -115,7 +115,7 @@ test("publishes an agent-first discovery surface", async () => {
 
   const join = await app.request("/join");
   assert.equal(join.status, 200);
-  assert.match(await join.text(), /COPY THIS TO AN AGENT/);
+  assert.match(await join.text(), /Give this to your agent/);
 });
 
 test("keeps prior release permalinks after a later deploy", async () => {
