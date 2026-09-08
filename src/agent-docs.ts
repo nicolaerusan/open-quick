@@ -1,3 +1,5 @@
+import { commonsSpaceUrl } from "./project-links.js";
+
 import { proPaths } from "./pro-api-description.js";
 const version = "0.1.0";
 
@@ -28,6 +30,7 @@ Status: private preview. Public discovery is open; deploy credentials are minted
 
 ## Source
 - [Repository](https://github.com/nicolaerusan/open-quick)
+- [Commons space](${commonsSpaceUrl}): Project discussion and coordination.
 - [Example folders](https://github.com/nicolaerusan/open-quick/tree/main/examples)
 `;
 }

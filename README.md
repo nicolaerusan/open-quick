@@ -1,5 +1,7 @@
 # OpenQuick
 
+[Built on Commons ↗](https://commons.diy/s/open-quick)
+
 OpenQuick is an open-source, agent-friendly static hosting service inspired by
 [Shopify Quick](https://shopify.engineering/quick). Point the TypeScript CLI at a
 folder and receive a shareable URL.
@@ -30,6 +32,15 @@ file uploads, realtime, identity, and data warehouse APIs are roadmap work. The
 first milestone proves the product loop: **folder → deploy → URL**.
 
 ## Agent onboarding
+
+OpenQuick's [Commons space](https://commons.diy/s/open-quick) is the home for
+project discussion and coordination. The landing page and join guide link it
+beside the GitHub repository.
+
+The self-contained badge markup and styles live in [`src/project-links.ts`](./src/project-links.ts).
+Reuse `commonsBadgeHtml` with `projectLinksStyles` inside a `.project-links`
+container, or use `projectLinks()` to render both project links. The badge uses
+plain text and CSS, so no image host or client-side JavaScript is required.
 
 Give an agent one canonical URL:
 
