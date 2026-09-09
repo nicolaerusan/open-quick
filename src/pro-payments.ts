@@ -8,6 +8,8 @@ import type { SiteStorage } from "./storage.js";
 import { prepareFiles } from "./store.js";
 import type { DeployFile, SiteRecord } from "./types.js";
 import { legacyQuote, newQuote, quoteAmount, quoteTermMs, validateQuote, type ProQuote, type QuoteDefaults } from "./pro-quote.js";
+import type { StripeGateway, StripePurchase, VerifiedStripeEvent } from "./stripe-payments.js";
+import { matchesStripeCheckout } from "./stripe-payments.js";
 export { PRO_AMOUNT, PRO_CURRENCY, PRIVATE_HOSTING_TERM_MS } from "./pro-quote.js";
 
 const hash = (input: string) => createHash("sha256").update(input).digest("hex");
@@ -19,8 +21,9 @@ export type ProOrder = {
   files?: DeployFile[]; reference?: string; receipt?: string; site?: SiteRecord;
   privateHosting?: { name: string; viewers: string[]; until?: string; origin?: string };
   fingerprint?: string;
+  stripe?: StripePurchase;
 };
-export type ProConfig = { root: string; recipient: `0x${string}`; mainnetRecipient?: `0x${string}`; mainnetPayments?: boolean; secret: string; baseUrl: string; actors: string[]; privateHosting?: boolean; commonsHosts?: boolean; privateOrigins?: string[]; quote?: QuoteDefaults };
+export type ProConfig = { root: string; recipient: `0x${string}`; mainnetRecipient?: `0x${string}`; mainnetPayments?: boolean; secret: string; baseUrl: string; actors: string[]; privateHosting?: boolean; commonsHosts?: boolean; privateOrigins?: string[]; quote?: QuoteDefaults; stripe?: StripeGateway };
 export type ProVerifier = (order: ProOrder, request: Request) => Promise<Response | { reference: string; receipt: string }>;
 
 /** One process + mounted volume, matching OpenQuick's deployment topology. */
@@ -58,7 +61,8 @@ export class ProPayments {
     return recipient;
   }
   offer() {
-    return { ...this.quote, amount: quoteAmount(this.quote), recipient: this.recipient(this.quote.network), testMode: this.quote.network === "tempo-testnet" };
+    return { ...this.quote, amount: quoteAmount(this.quote), recipient: this.recipient(this.quote.network), testMode: this.quote.network === "tempo-testnet",
+      ...(this.config.stripe ? { card: { enabled: true, amount: "$5.00", currency: "USD", termDays: 30, siteCount: 1, seller: this.config.stripe.offer.seller } } : {}) };
   }
   private lock<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.tail.then(fn); this.tail = run.catch(() => undefined); return run;
@@ -98,6 +102,7 @@ export class ProPayments {
       checkoutUrl: order.privateHosting ? null : `${this.config.baseUrl}/pro/${order.id}`,
       ...(order.privateHosting?.origin ? { browserOrigin: order.privateHosting.origin } : {}),
       ...(order.privateHosting ? { visibility: "private", name: order.privateHosting.name, owner: order.actor, viewers: order.privateHosting.viewers, hostingUntil: order.privateHosting.until ?? null, termDays: order.quote.termDays } : {}),
+      ...(this.config.stripe ? { cardOffer: { enabled: true, amount: "$5.00", currency: "USD", termDays: 30, siteCount: 1, seller: this.config.stripe.offer.seller }, stripeCheckoutUrl: order.stripe?.checkoutUrl ?? null, stripeStatus: order.stripe?.sessionStatus ?? null } : {}),
       ...(order.reference ? { transaction: order.reference } : {}),
       ...(order.site ? { site: order.site, url: `${this.config.baseUrl}${sitePrefix}/${order.site.slug}/`, releaseUrl: `${this.config.baseUrl}${sitePrefix}/${order.site.slug}/releases/${order.site.releaseId}/` } : {}),
     };
@@ -176,6 +181,65 @@ export class ProPayments {
       return this.view(order);
     });
   }
+  async stripeCheckout(id: string, actor: string) {
+    return this.lock(async () => {
+      const order = this.authorizeOrder(id, actor);
+      const gateway = this.config.stripe;
+      if (!gateway) throw new ProError(404, "Card checkout is not enabled");
+      if (order.status === "published") return this.view(order);
+      if (order.status !== "pending" || order.reference || order.receipt) throw new ProError(409, "This purchase is already being processed. Do not pay again.");
+      if (order.quote.network === "tempo-mainnet" && !this.config.mainnetPayments) throw new ProError(409, "Mainnet charging is paused. No payment was requested.");
+      if (order.recipient.toLowerCase() !== this.recipient(order.quote.network).toLowerCase()) throw new ProError(409, "The receiving account changed. This unpaid intent is no longer payable.");
+      if (Date.parse(order.expiresAt) <= Date.now()) throw new ProError(410, "The payment window expired. Resume this saved purchase to continue. No payment was requested.");
+      if (order.stripe?.checkoutUrl && order.stripe.sessionStatus === "open") return this.view(order);
+      const purchase: StripePurchase = { offer: gateway.offer, attempt: (order.stripe?.attempt ?? 0) + 1, refunded: order.stripe?.refunded ?? 0, disputed: order.stripe?.disputed ?? false };
+      order.stripe = purchase;
+      const session = await gateway.create(order);
+      purchase.sessionId = session.id; purchase.checkoutUrl = session.url; purchase.requestedAt = new Date().toISOString(); purchase.sessionStatus = "open";
+      this.save(order);
+      return this.view(order);
+    });
+  }
+  async reconcileStripe(id: string, actor?: string, eventId?: string) {
+    return this.lock(async () => {
+      const order = actor ? this.authorizeOrder(id, actor) : this.read(id);
+      const gateway = this.config.stripe;
+      if (!gateway || !order.stripe) throw new ProError(404, "Card checkout not found");
+      let snapshot;
+      try { snapshot = await gateway.retrieve(order.stripe); }
+      catch { throw new ProError(502, "Stripe payment status could not be verified. Do not pay again."); }
+      if (!matchesStripeCheckout(order, snapshot)) throw new ProError(502, "Stripe payment details do not match this purchase. Do not pay again.");
+      const purchase = order.stripe;
+      purchase.sessionStatus = snapshot.status;
+      if (snapshot.paymentIntent?.id) purchase.paymentIntentId = snapshot.paymentIntent.id;
+      if (snapshot.chargeId) purchase.chargeId = snapshot.chargeId;
+      if (snapshot.customerEmail) purchase.customerEmail = snapshot.customerEmail;
+      if (snapshot.customerName) purchase.customerName = snapshot.customerName;
+      if (snapshot.customerId) purchase.customerId = snapshot.customerId;
+      if (snapshot.fee !== undefined) purchase.fee = snapshot.fee;
+      if (snapshot.net !== undefined) purchase.net = snapshot.net;
+      purchase.refunded = snapshot.refunded; purchase.disputed = snapshot.disputed;
+      if (snapshot.receiptUrl) purchase.receiptUrl = snapshot.receiptUrl;
+      if (eventId) purchase.lastEventId = eventId;
+      if (snapshot.paymentStatus !== "paid") { this.save(order); return this.view(order); }
+      if (order.status === "published") { this.save(order); return this.view(order); }
+      if (order.reference && !order.reference.startsWith("stripe:")) throw new ProError(409, "This purchase already has another payment record. Do not pay again.");
+      if (!order.reference) { order.reference = `stripe:${purchase.paymentIntentId ?? purchase.sessionId}`; purchase.paidAt = new Date().toISOString(); order.status = "paid"; }
+      await this.publish(order);
+      return this.view(order);
+    });
+  }
+  async handleStripeEvent(event: VerifiedStripeEvent) {
+    const gateway = this.config.stripe;
+    if (!gateway || event.live !== (gateway.offer.mode === "live") || (event.account && event.account !== gateway.offer.accountId)) throw new ProError(400, "Stripe webhook is not for this checkout");
+    if (!["checkout.session.completed", "checkout.session.async_payment_succeeded", "payment_intent.succeeded", "charge.refunded", "charge.dispute.created", "charge.dispute.closed"].includes(event.type)) return null;
+    let orderId = event.orderId;
+    if (!orderId && (event.paymentIntentId || event.chargeId || event.sessionId)) {
+      const found = this.privateOrders().find(order => order.stripe && ((event.paymentIntentId && order.stripe.paymentIntentId === event.paymentIntentId) || (event.chargeId && order.stripe.chargeId === event.chargeId) || (event.sessionId && order.stripe.sessionId === event.sessionId)));
+      orderId = found?.id;
+    }
+    return orderId ? this.reconcileStripe(orderId, undefined, event.id) : null;
+  }
   project(slug: string, actor: string, ownerOnly = false) {
     const order = this.privateOrders().find((entry) => entry.slug === slug && entry.status === "published");
     if (!order?.privateHosting || !this.allowsActor(actor) || (order.actor !== actor && (ownerOnly || !order.privateHosting.viewers.includes(actor)))) throw new ProError(404, "Not found");
@@ -205,6 +269,7 @@ export class ProPayments {
       if (order.status === "published") return result();
       if (order.status === "processing" || order.status === "needs_review") throw new ProError(409, "Payment outcome needs operator review. Do not pay again.");
       if (order.status === "pending") {
+        if (order.stripe?.sessionId) throw new ProError(409, "A card checkout has been started for this purchase. Continue it or wait for its status; do not pay again.");
         if (order.quote.network === "tempo-mainnet" && !this.config.mainnetPayments) throw new ProError(409, "Mainnet charging is paused. No payment was requested.");
         if (order.recipient.toLowerCase() !== this.recipient(order.quote.network).toLowerCase()) throw new ProError(409, "The receiving account changed. This unpaid intent is no longer payable.");
         if (Date.parse(order.expiresAt) <= Date.now()) throw new ProError(410, "The payment window expired. Resume this saved purchase to continue. No payment was requested.");
@@ -233,15 +298,16 @@ export class ProPayments {
           order.reference = verified.reference; order.receipt = verified.receipt; order.status = "paid"; this.save(order);
         } catch { order.status = "needs_review"; this.save(order); throw new ProError(503, "Payment outcome needs operator review. Do not pay again."); }
       }
-      // A paid order can retry publication after an interrupted process. Its
-      // private, reserved slug and content are fixed before payment.
-      const existing = await this.sites.site(order.slug).catch(() => null);
-      order.site = existing ?? await this.sites.deploy(order.slug, order.files!, order.actor);
-      if (order.privateHosting && !order.privateHosting.until) {
-        order.privateHosting.until = new Date(Date.parse(order.site.createdAt) + quoteTermMs(order.quote)).toISOString();
-      }
-      order.status = "published"; delete order.files; this.save(order);
+      await this.publish(order);
       return result();
     });
+  }
+  private async publish(order: ProOrder) {
+    // A paid order can retry publication after an interrupted process. Its
+    // private, reserved slug and content are fixed before payment.
+    const existing = await this.sites.site(order.slug).catch(() => null);
+    order.site = existing ?? await this.sites.deploy(order.slug, order.files!, order.actor);
+    if (order.privateHosting && !order.privateHosting.until) order.privateHosting.until = new Date(Date.parse(order.site.createdAt) + quoteTermMs(order.quote)).toISOString();
+    order.status = "published"; delete order.files; this.save(order);
   }
 }

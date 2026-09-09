@@ -86,6 +86,12 @@ export function privatePublishingRoutes(
     const order = publishing!.payments.authorizeOrder(c.req.param("id"), c.get("actor"));
     return c.json(publishing!.payments.view(order));
   });
+  app.post("/api/v1/private-payments/:id/stripe", async (c) => {
+    return c.json(await publishing!.payments.stripeCheckout(c.req.param("id"), c.get("actor")));
+  });
+  app.get("/api/v1/private-payments/:id/stripe/reconcile", async (c) => {
+    return c.json(await publishing!.payments.reconcileStripe(c.req.param("id"), c.get("actor")));
+  });
   app.post("/api/v1/private-payments/:id/resume", async (c) => c.json(await publishing!.payments.resume(c.req.param("id"), c.get("actor"))));
   app.all("/api/v1/private-payments/:id/pay", async (c) => {
     if (!["GET", "POST"].includes(c.req.method)) return c.json({ error: "Method not allowed" }, 405);
