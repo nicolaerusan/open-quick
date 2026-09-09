@@ -7,6 +7,7 @@ import { ActivationStore } from "./activation.js";
 import { createApp } from "./app.js";
 import { loadBootConfig } from "./boot.js";
 import { createFilesystemStorage } from "./store.js";
+import { HostedStripeGateway } from "./stripe-payments.js";
 
 const boot = loadBootConfig(process.env);
 
@@ -23,6 +24,18 @@ if (process.env.OPENQUICK_PRIVATE_PUBLISHING === "true") {
   if (!/^[a-f0-9]{64}$/i.test(secret)) throw Error("Private hosting needs the persistent payment challenge secret");
   const bridge = process.env.OPENQUICK_COMMONS_ORIGIN && process.env.OPENQUICK_PRIVATE_ORIGINS
     ? commonsPublishingBridge(process.env.OPENQUICK_COMMONS_ORIGIN, process.env.OPENQUICK_PRIVATE_ORIGINS.split(",").map((v) => v.trim()).filter(Boolean), boot.baseUrl ?? "") : undefined;
+  const stripeConfigured = [process.env.OPENQUICK_STRIPE_ACCOUNT_ID, process.env.OPENQUICK_STRIPE_PRICE_ID, process.env.OPENQUICK_STRIPE_SECRET_KEY, process.env.OPENQUICK_STRIPE_WEBHOOK_SECRET].some(Boolean);
+  let stripe: HostedStripeGateway | undefined;
+  if (stripeConfigured) {
+    const checkoutOrigin = process.env.OPENQUICK_PRO_CHECKOUT_ORIGIN;
+    const accountId = process.env.OPENQUICK_STRIPE_ACCOUNT_ID;
+    const priceId = process.env.OPENQUICK_STRIPE_PRICE_ID;
+    const secretKey = process.env.OPENQUICK_STRIPE_SECRET_KEY;
+    const webhookSecret = process.env.OPENQUICK_STRIPE_WEBHOOK_SECRET;
+    if (!checkoutOrigin || !accountId || !priceId || !secretKey || !webhookSecret) throw Error("Stripe hosting checkout needs account, price, secret, webhook, and checkout origin configuration");
+    stripe = new HostedStripeGateway({ version: 1, accountId, priceId, mode: (process.env.OPENQUICK_STRIPE_MODE ?? "live") as "test" | "live", amount: 500, currency: "usd", termDays: 30, siteCount: 1, seller: process.env.OPENQUICK_STRIPE_SELLER ?? "Weird Systems" }, secretKey, webhookSecret, checkoutOrigin);
+    await stripe.ready();
+  }
   privatePublishing = { store: privateStore, ...(bridge ? { bridge } : {}),
     ...(process.env.OPENQUICK_PRO_CHECKOUT_ORIGIN ? { checkoutOrigin: process.env.OPENQUICK_PRO_CHECKOUT_ORIGIN } : {}), payments: new ProPayments({
     root, recipient: process.env.OPENQUICK_PRO_RECIPIENT as `0x${string}`,
@@ -32,6 +45,7 @@ if (process.env.OPENQUICK_PRIVATE_PUBLISHING === "true") {
     baseUrl: boot.baseUrl ?? "", privateHosting: true, commonsHosts: !!bridge,
     ...(bridge ? { privateOrigins: bridge.privateOrigins } : {}),
     actors: (process.env.OPENQUICK_PRO_ACTORS ?? "operator").split(",").map((value) => value.trim()).filter(Boolean),
+    ...(stripe ? { stripe } : {}),
   }, privateStore) };
 }
 const app = createApp({

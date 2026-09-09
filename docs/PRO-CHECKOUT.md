@@ -2,6 +2,9 @@
 
 The first Pro offer is one private static project hosted for 30 days, including
 updates during that term. It is a one-time purchase with no automatic renewal.
+The card offer is **$5.00 USD for one private site for 30 days**. It is a
+separate payment choice from the existing Tempo wallet offer; additional sites
+require additional purchases.
 The beta price is 0.01 pathUSD on Tempo testnet or, after a separate rollout,
 0.01 USDC.e on Tempo mainnet. This is a pilot price, not a finalized commercial
 subscription price. Private files remain limited to 50 files and 1 MB.
@@ -132,8 +135,41 @@ Before shipping cards:
   separately. Define refund/hosting-access policy and reconciliation before
   enabling live cards. A refunded charge does not erase the historical receipt.
 
-Card checkout, card payouts, additional crypto methods, automated spending and
-automatic renewal are not implemented by this change.
+### Stripe card rollout
+
+The OpenQuick checkout has a Stripe-hosted card path when all of these server
+variables are present: `OPENQUICK_STRIPE_ACCOUNT_ID`,
+`OPENQUICK_STRIPE_PRICE_ID`, `OPENQUICK_STRIPE_MODE=live`,
+`OPENQUICK_STRIPE_SECRET_KEY`, `OPENQUICK_STRIPE_WEBHOOK_SECRET`, and
+`OPENQUICK_STRIPE_SELLER`. The configured Stripe Price must be a live, one-time
+USD price of exactly 500 cents. The process checks the account and Price at
+startup, creates a Checkout Session with an idempotency key, and never sends a
+Stripe secret to the browser.
+
+Stripe redirects successful or cancelled sessions back to
+`/pro/hosting?stripe_order={orderId}`. The browser asks OpenQuick to reconcile
+the session, while Stripe sends signed events to
+`POST /webhooks/stripe` on the isolated checkout origin. OpenQuick verifies the
+event signature, account, mode, exact Price, amount, currency and order
+metadata before publishing. An unpaid or mismatched session does not unlock
+hosting. Refund and dispute events refresh the durable payment record after
+publication so the operator can reconcile access and revenue.
+
+For a filmed demonstration, use a test-mode Price and a test webhook secret on
+a disposable local checkout, then record the browser showing: create project →
+choose **Pay $5 by card** → Stripe Checkout → return to OpenQuick → private site
+published → refresh with the same order showing no second charge. Keep a second
+window on Stripe’s test Payments and Webhooks pages, and show the order ID and
+the matching `openquick_order` metadata. Playwright can record the browser
+automatically with `recordVideo.dir`; for a live $5 charge, switch the same
+script to the live origin only after the seller has approved the charge and use
+the real card checkout. Apple’s built-in screen recording can capture the
+browser and dashboard together.
+
+The repository test `test/stripe-payments.test.ts` runs the same state machine
+without a network charge: it proves that an unpaid Checkout Session leaves the
+site unpublished and that one verified paid session publishes it exactly once.
+Run `npm run typecheck`, `npm test`, and `npm run build` before recording.
 
 
 ## Browser payment regression and agent rehearsal

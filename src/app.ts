@@ -246,6 +246,18 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     if (!bridge || origin !== checkoutOrigin || others.some(other => new URL(other).hostname === new URL(origin).hostname)) throw Error("Pro checkout needs its own hostname, separate from Commons and all hosted content");
     const routes = proHostingRoutes(options.privatePublishing);
     for (const path of ["/pro", "/pro/hosting", "/pro/hosting/*", "/pro/hosting-client.js"]) checkout.all(path, c => routes.fetch(c.req.raw));
+    checkout.post("/webhooks/stripe", async (c) => {
+      const gateway = options.privatePublishing?.payments.config.stripe;
+      if (!gateway) return c.json({ error: "Not found" }, 404);
+      const signature = c.req.header("stripe-signature") ?? "";
+      try {
+        const event = gateway.event(await c.req.raw.text(), signature);
+        await options.privatePublishing!.payments.handleStripeEvent(event);
+        return c.json({ received: true });
+      } catch {
+        return c.json({ error: "Webhook rejected" }, 400);
+      }
+    });
     for (const path of ["/api/v1/private-projects", "/api/v1/private-projects/*", "/api/v1/private-payments/*"]) checkout.all(path, c => privateRoutes.fetch(c.req.raw));
     checkout.all("*", c => c.json({ error: "Not found" }, 404));
   }

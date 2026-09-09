@@ -40,7 +40,7 @@ function render() {
   for (const order of orders) {
     const card = document.createElement("article"); card.className = "purchase";
     const heading = document.createElement("div"); heading.append(text("h3", order.name), text("span", order.status, "tag")); card.append(heading);
-    card.append(text("p", `${order.termDays} days · ${order.amount} ${order.testMode ? "test " : ""}${order.currency} · ${order.network === "tempo-mainnet" ? "Tempo mainnet" : "Tempo testnet"}`));
+    card.append(text("p", `${order.termDays} days · ${order.amount} ${order.testMode ? "test " : ""}${order.currency} · ${order.network === "tempo-mainnet" ? "Tempo mainnet" : "Tempo testnet"}${order.cardOffer ? " · $5 USD by card" : ""}`));
     card.append(text("p", `Receiving address: ${order.recipient}`, "address"));
     const controls = document.createElement("div"); controls.className = "buttons"; card.append(controls);
     if (order.status === "needs_review") card.append(text("p", "Payment outcome needs review. Do not pay again. Keep this order ID for the operator."));
@@ -54,6 +54,14 @@ function render() {
         controls.append(action("Resume purchase", async () => { await resumePurchase(order); }, true));
         card.append(text("p", `Order: ${order.id}`, "address")); purchases.append(card);
         continue;
+      }
+      if (order.cardOffer?.enabled) {
+        if (order.stripeCheckoutUrl) controls.append(action("Continue card checkout", async () => { location.assign(order.stripeCheckoutUrl!); }, true));
+        else controls.append(action("Pay $5 by card", async () => {
+          const checkout = await read(await fetch(`/api/v1/private-payments/${order.id}/stripe`, { method: "POST" }));
+          if (!checkout.stripeCheckoutUrl) throw Error("Stripe checkout did not return a payment link. Check this purchase before retrying.");
+          location.assign(checkout.stripeCheckoutUrl);
+        }, true));
       }
       const payer = payers.get(order.id);
       if (!payer) controls.append(action("Choose payment wallet", async () => {
@@ -96,6 +104,11 @@ function render() {
   }
 }
 async function load() {
+  const stripeOrder = new URLSearchParams(location.search).get("stripe_order");
+  if (stripeOrder && /^[a-f0-9]{48}$/.test(stripeOrder)) {
+    await read(await fetch(`/api/v1/private-payments/${stripeOrder}/stripe/reconcile`, { cache: "no-store" }));
+    history.replaceState(null, "", "/pro/hosting");
+  }
   const data = await read(await fetch("/api/v1/private-projects", { cache: "no-store" }));
   orders = data.purchases; published = data.projects; actor = data.actor; render();
 }
